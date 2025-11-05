@@ -692,6 +692,12 @@ ComfyUI-Maya1_TTS/
 
 </details>
 
+
+
+https://github.com/user-attachments/assets/0a667f5b-f93a-4cc4-a0d5-030c6d9b1be7
+
+
+
 ---
 
 ## 📝 Credits
