@@ -10,13 +10,6 @@ dependencies = [
     "snac>=1.0.0",
 ]
 
-[project.optional-dependencies]
-# Optional dependencies for enhanced performance and memory efficiency
-quantization = ["bitsandbytes>=0.41.0"]
-flash-attention = ["flash-attn>=2.0.0"]
-sage-attention = ["sageattention>=1.0.0"]
-all = ["bitsandbytes>=0.41.0", "flash-attn>=2.0.0", "sageattention>=1.0.0"]
-
 [project.urls]
 Repository = "https://github.com/Saganaki22/ComfyUI-Maya1_TTS"
 #  Used by Comfy Registry https://comfyregistry.org
