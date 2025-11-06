@@ -20,7 +20,7 @@ A ComfyUI node pack for [Maya1](https://huggingface.co/maya-research/maya1), a 3
 - 😊 **20+ Emotions**: laugh, cry, whisper, angry, sigh, gasp, scream, and more
 - ⚡ **Real-time Generation** with SNAC neural codec (24kHz audio)
 - 🔧 **Multiple Attention Mechanisms**: SDPA, Flash Attention 2, Sage Attention
-- 💾 **Quantization Support**: 4-bit and 8-bit for memory-constrained GPUs (bitsandbytes)
+- 💾 **Quantization Support**: 4-bit and 8-bit for memory-constrained GPUs
 - 🛑 **Native ComfyUI Cancel**: Stop generation anytime
 - 📊 **Progress Tracking**: Real-time token generation speed (it/s)
 - 🔄 **Model Caching**: Fast subsequent generations
