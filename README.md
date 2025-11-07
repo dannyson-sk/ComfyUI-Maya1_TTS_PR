@@ -8,7 +8,6 @@ A ComfyUI node pack for [Maya1](https://huggingface.co/maya-research/maya1), a 3
 ![Python](https://img.shields.io/badge/python-3.11+-blue.svg)
 ![ComfyUI](https://img.shields.io/badge/ComfyUI-compatible-green.svg)
 
-<img width="1426" height="820" alt="{BC838DB2-5A85-4258-A6CD-F7607CCBD6D2}" src="https://github.com/user-attachments/assets/fbb48a04-7157-42a7-b77c-d091e6deb926" />
 
 
 
@@ -50,7 +49,7 @@ A ComfyUI node pack for [Maya1](https://huggingface.co/maya-research/maya1), a 3
 
 ```bash
 cd ComfyUI/custom_nodes/
-git clone https://github.com/Saganaki22/-ComfyUI-Maya1_TTS.git
+git clone https://github.com/Saganaki22/ComfyUI-Maya1_TTS.git
 cd ComfyUI-Maya1_TTS
 ```
 
@@ -192,7 +191,8 @@ Restart ComfyUI to load the new nodes. The node will appear under:
 
 All-in-one node for loading models and generating speech with a beautiful custom canvas UI.
 
-![Maya1 TTS Custom UI](https://github.com/user-attachments/assets/fbb48a04-7157-42a7-b77c-d091e6deb926)
+<img width="615" height="1121" alt="Screenshot 2025-11-07 084153" src="https://github.com/user-attachments/assets/19105cc2-030a-40e3-b4d9-e18bd6d50b65" />
+
 
 ### ✨ Custom Canvas Interface
 
