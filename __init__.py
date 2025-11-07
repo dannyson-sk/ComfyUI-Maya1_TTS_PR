@@ -25,7 +25,7 @@ __version__ = "1.0.0"
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]
 
 # Tell ComfyUI where to find our JavaScript extensions
-WEB_DIRECTORY = os.path.join(os.path.dirname(__file__), "web")
+WEB_DIRECTORY = "./js"
 
 # Note: VRAM management is controlled by the keep_model_in_vram toggle in the node
 # Maya1 models are kept in a separate cache and are not affected by ComfyUI's
