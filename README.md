@@ -31,12 +31,16 @@ https://github.com/user-attachments/assets/1be0c2a0-22fb-4890-9147-d20abeb2e067
 - 🎨 **Beautiful Dark Theme** with purple accents and smooth animations
 - 👤 **5 Character Presets**: Quick-load voice templates (Male US, Female UK, Announcer, Robot, Demon)
 - 🎭 **16 Visual Emotion Buttons**: One-click emotion tag insertion at cursor position
-- ⛶ **Lightbox Modal Editor**: Fullscreen text editor for longform content
-- ⌨️ **Advanced Keyboard Shortcuts**: Multiline editing with Ctrl+A, Ctrl+C, Ctrl+V, Ctrl+Enter
+- ⛶ **Professional HTML Modal Editor**: Fullscreen text editor with native textarea for longform content
+- 🔤 **Font Size Controls**: Adjustable 12-20px font size with visual slider
+- ⌨️ **Advanced Keyboard Shortcuts**: Ctrl+A, Ctrl+C, Ctrl+V, Ctrl+X, Ctrl+Enter to save, ESC to cancel
+- 🔔 **Toast Notifications**: Visual feedback for save success and validation errors
 - 📝 **Inline Text Editing**: Click-to-edit with cursor positioning and drag-to-select
-- 🖱️ **Scroll Support**: Mouse wheel scrolling in text fields
+- 🖱️ **Scroll Support**: Custom themed scrollbars with mouse wheel scrolling
+- 📱 **Responsive Design**: Modal adapts to all screen sizes
 - 💡 **Contextual Tooltips**: Helpful hints on every control
 - 🎬 **Collapsible Sections**: Clean, organized interface
+- 🔄 **Smart Audio Processing**: Auto-chunking for long text with crossfade blending for seamless output
 
 ---
 
@@ -214,20 +218,28 @@ The node features a completely custom-built interface with:
 - Tags insert where you're typing, not just at the end
 - Click header to collapse/expand section
 
-**⛶ Lightbox Modal** (Bottom right of Text field)
-- Click the expand button for fullscreen text editing
-- Large text area perfect for longform content
-- All emotion buttons available inside modal
-- Mouse wheel scrolling with visual scrollbar
-- **Enter** to save and close, **Escape** to cancel
+**⛶ Professional HTML Modal** (Bottom right of Text field)
+- Click the expand button (⛶) for fullscreen text editing
+- Native HTML textarea with proper newline and whitespace support
+- **Font Size Slider**: Adjust text size from 12px to 20px with visual A/A controls
+- All 16 emotion buttons available inside modal for quick tag insertion
+- **Custom Themed Scrollbar**: Purple accents matching the node design
+- **Toast Notifications**: Green checkmark for "Text Saved", red X for validation errors
+- **Empty Text Validation**: Prevents saving blank text with helpful error message
+- **Keyboard Shortcuts**:
+  - **Ctrl+Enter**: Save and close
+  - **ESC**: Cancel without saving
+  - Full text selection and clipboard support (Ctrl+A, C, V, X)
+- **Responsive Design**: Modal adapts to small and large screens, buttons always visible
+- **Visual Hints**: Subtle grey text under buttons showing keyboard shortcuts
 
-**Keyboard Shortcuts**
-- `Enter`: New line (in text fields)
-- `Ctrl+Enter`: Save changes
-- `Escape`: Cancel editing
+**Keyboard Shortcuts** (Inline Editing & Modal)
+- `Enter`: New line (in multiline text fields)
+- `Ctrl+Enter`: Save and apply changes
+- `Escape`: Cancel editing without saving
 - `Ctrl+A`: Select all text
-- `Ctrl+C/V/X`: Copy, paste, cut
-- Click outside field: Auto-save
+- `Ctrl+C/V/X`: Copy, paste, cut selected text
+- Click outside field: Auto-save (inline editing only)
 
 <details>
 <summary><b>Model Settings</b></summary>
