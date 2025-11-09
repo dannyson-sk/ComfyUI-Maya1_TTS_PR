@@ -208,7 +208,10 @@ Restart ComfyUI to load the new nodes. The node will appear under:
 
 All-in-one node for loading models and generating speech with a beautiful custom canvas UI.
 
-<img width="615" height="1121" alt="Screenshot 2025-11-07 084153" src="https://github.com/user-attachments/assets/19105cc2-030a-40e3-b4d9-e18bd6d50b65" />
+| Maya1 TTS (AIO) | Maya1 TTS (AIO) Barebones |
+|:---:|:---:|
+| <img width="615" alt="Screenshot 2025-11-07 084153" src="https://github.com/user-attachments/assets/19105cc2-030a-40e3-b4d9-e18bd6d50b65" /> | <img width="648" alt="image" src="https://github.com/user-attachments/assets/7aff4fbb-c434-4d16-b4f9-22017167d455" /> |
+
 
 
 ### ✨ Custom Canvas Interface
