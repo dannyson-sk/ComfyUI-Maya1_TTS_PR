@@ -10,6 +10,7 @@ import random
 import re
 import gc
 from typing import Tuple, List
+import comfy.model_management as mm
 
 from ..core import (
     Maya1ModelLoader,
@@ -22,6 +23,35 @@ from ..core import (
     load_emotions_list,
     crossfade_audio
 )
+
+
+def create_progress_bar(current: int, total: int, width: int = 12, show_numbers: bool = True) -> str:
+    """
+    Create a visual progress bar like ComfyUI's native one.
+
+    Args:
+        current: Current progress value
+        total: Total value
+        width: Width of the progress bar in characters
+        show_numbers: Whether to show the numbers after the bar
+
+    Returns:
+        Formatted progress bar string
+    """
+    if total == 0:
+        percent = 0
+    else:
+        percent = min(current / total, 1.0)
+
+    filled = int(width * percent)
+    empty = width - filled
+
+    bar = '█' * filled + '░' * empty
+
+    if show_numbers:
+        return f"[{bar}] {current}/{total}"
+    else:
+        return f"[{bar}]"
 
 def split_text_smartly(text: str, max_words_per_chunk: int = 100) -> List[str]:
     """
@@ -219,8 +249,6 @@ class Maya1TTSBarebonesNode:
         Native ComfyUI VRAM cleanup - unloads all models and clears cache.
         Follows best practices from ComfyUI's memory management system.
         """
-        import comfy.model_management as mm
-
         print("🗑️  Cleaning up VRAM...")
 
         # Step 1: Unload all models from VRAM
@@ -254,7 +282,9 @@ class Maya1TTSBarebonesNode:
         top_p: float,
         repetition_penalty: float,
         seed: int,
-        control_after_generate: str = "randomize"
+        control_after_generate: str = "randomize",
+        chunk_index: int = None,
+        total_chunks: int = None
     ) -> Tuple[dict]:
         """
         Load model (if needed) and generate expressive speech.
@@ -390,6 +420,7 @@ class Maya1TTSBarebonesNode:
 
             text_chunks = split_text_smartly(text, max_words_per_chunk=estimated_words_per_chunk)
             print(f"📦 Split into {len(text_chunks)} chunks")
+            print("=" * 70)
 
             # Create outer progress bar for chunks (layered progress)
             chunk_progress = comfy.utils.ProgressBar(len(text_chunks))
@@ -398,10 +429,11 @@ class Maya1TTSBarebonesNode:
             sample_rate = None
 
             for i, chunk_text in enumerate(text_chunks):
-                print(f"\n{'=' * 70}")
-                print(f"🎤 Generating chunk {i + 1}/{len(text_chunks)}")
+                # Create visual progress display for chunks
+                chunk_bar = create_progress_bar(i + 1, len(text_chunks), width=6)
+                print(f"\n🎤 Chunk Progress: {chunk_bar}")
                 print(f"📝 Text: {chunk_text[:60]}...")
-                print(f"{'=' * 70}")
+                print("=" * 70)
 
                 # Check for cancellation before each chunk
                 mm.throw_exception_if_processing_interrupted()
@@ -422,7 +454,9 @@ class Maya1TTSBarebonesNode:
                     top_p=top_p,
                     repetition_penalty=repetition_penalty,
                     seed=actual_seed,  # Use same seed for all chunks
-                    control_after_generate=control_after_generate
+                    control_after_generate=control_after_generate,
+                    chunk_index=i + 1,  # Pass chunk context for layered progress
+                    total_chunks=len(text_chunks)
                 )
 
                 # Extract audio data (returns tuple, get first element)
@@ -531,13 +565,15 @@ class Maya1TTSBarebonesNode:
 
             class InterruptionStoppingCriteria(StoppingCriteria):
                 """Custom stopping criteria that checks for ComfyUI cancellation."""
-                def __init__(self, progress_bar):
+                def __init__(self, progress_bar, chunk_index=None, total_chunks=None):
                     self.progress_bar = progress_bar
                     self.current_tokens = 0
                     self.input_length = 0
                     self.start_time = None
                     self.last_print_time = None
                     self.print_interval = 0.5  # Print progress every 0.5 seconds
+                    self.chunk_index = chunk_index
+                    self.total_chunks = total_chunks
 
                 def __call__(self, input_ids, scores, **kwargs):
                     import time
@@ -554,12 +590,22 @@ class Maya1TTSBarebonesNode:
                         self.progress_bar.update(new_tokens - self.current_tokens)
                         self.current_tokens = new_tokens
 
-                        # Print progress with it/s to console
+                        # Print progress with visual bar and it/s to console
                         current_time = time.time()
                         if current_time - self.last_print_time >= self.print_interval:
                             elapsed = current_time - self.start_time
                             it_per_sec = new_tokens / elapsed if elapsed > 0 else 0
-                            print(f"   Tokens: {new_tokens}/{max_tokens} | Speed: {it_per_sec:.2f} it/s | Elapsed: {elapsed:.1f}s", end='\r')
+
+                            # Create visual progress bar for tokens
+                            token_bar = create_progress_bar(new_tokens, max_tokens, width=12)
+
+                            # Show layered progress if in chunked mode
+                            if self.chunk_index is not None and self.total_chunks is not None:
+                                chunk_bar = create_progress_bar(self.chunk_index, self.total_chunks, width=6, show_numbers=False)
+                                print(f"   Chunk {chunk_bar} → Token Progress: {token_bar} | Speed: {it_per_sec:.2f} it/s", end='\r')
+                            else:
+                                print(f"   Progress: {token_bar} | Speed: {it_per_sec:.2f} it/s | Elapsed: {elapsed:.1f}s", end='\r')
+
                             self.last_print_time = current_time
 
                     # Check for cancellation using ComfyUI's native method
@@ -573,7 +619,7 @@ class Maya1TTSBarebonesNode:
                     return False  # Continue generation
 
             stopping_criteria = StoppingCriteriaList([
-                InterruptionStoppingCriteria(progress_bar)
+                InterruptionStoppingCriteria(progress_bar, chunk_index=chunk_index, total_chunks=total_chunks)
             ])
 
             # Generate tokens with cancellation support
