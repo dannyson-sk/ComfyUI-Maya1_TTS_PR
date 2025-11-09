@@ -139,7 +139,7 @@ class Maya1TTSBarebonesNode:
                     "multiline": True,
                     "default": "Hello! This is Maya1 <laugh> the best open source voice AI model with emotions.",
                     "dynamicPrompts": False,
-                    "tooltip": "Your script text to synthesize. Add emotion tags like <laugh>, <cry>, <whisper>, <angry>, <gasp>, <sigh> anywhere in the text. Type tags manually (no visual buttons in barebones mode)"
+                    "tooltip": "Your script text to synthesize. Add emotion tags anywhere in the text (type manually - no visual buttons in barebones mode). All 17 available tags: <laugh>, <laugh_harder>, <giggle>, <chuckle>, <cry>, <sigh>, <gasp>, <whisper>, <angry>, <scream>, <snort>, <yawn>, <cough>, <sneeze>, <breathing>, <humming>, <throat_clearing>"
                 }),
 
                 # Model settings
