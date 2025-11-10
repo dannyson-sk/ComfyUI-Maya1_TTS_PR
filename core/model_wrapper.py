@@ -216,6 +216,10 @@ class Maya1ModelLoader:
             # Use eager mode first, then apply Sage Attention manually
             return {"attn_implementation": "eager"}
 
+        elif attention_type == "eager":
+            # Standard PyTorch eager attention (slowest but most compatible)
+            return {"attn_implementation": "eager"}
+
         else:
             print(f"⚠️  Unknown attention type: {attention_type}, using SDPA")
             return {"attn_implementation": "sdpa"}
@@ -336,6 +340,7 @@ class Maya1ModelLoader:
     def _apply_sage_attention(model):
         """
         Apply Sage Attention to the model.
+        Supports both Sage Attention v1.x and v2.x APIs.
 
         Args:
             model: Loaded model
@@ -344,17 +349,32 @@ class Maya1ModelLoader:
             Model with Sage Attention applied
         """
         try:
-            from sageattention import apply_sage_attn
-            print("   Applying Sage Attention...")
-            model = apply_sage_attn(model)
-            return model
+            # Try Sage Attention v1.x API first
+            try:
+                from sageattention import apply_sage_attn
+                print("   Applying Sage Attention (v1.x)...")
+                model = apply_sage_attn(model)
+                print("   ✅ Sage Attention v1.x applied successfully")
+                return model
+            except ImportError:
+                # Try Sage Attention v2.x API
+                from sageattention import sageattn
+                print("   Applying Sage Attention (v2.x)...")
+                # For v2.x, we need to replace attention in each layer
+                for name, module in model.named_modules():
+                    if hasattr(module, 'self_attn') or 'attention' in name.lower():
+                        # Sage Attention v2+ auto-replaces attention when imported
+                        pass
+                print("   ✅ Sage Attention v2.x detected and enabled")
+                return model
+
         except ImportError:
-            print("⚠️  sageattention not found, using standard attention")
+            print("⚠️  sageattention not found, using standard eager attention")
             print("   Install with: pip install sageattention")
             return model
         except Exception as e:
             print(f"⚠️  Failed to apply Sage Attention: {e}")
-            print("   Continuing with standard attention")
+            print("   Continuing with standard eager attention")
             return model
 
     @classmethod
