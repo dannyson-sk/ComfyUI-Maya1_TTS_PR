@@ -20,7 +20,8 @@ https://github.com/user-attachments/assets/1be0c2a0-22fb-4890-9147-d20abeb2e067
 - 😊 **16 Emotion Tags**: laugh, cry, whisper, angry, sigh, gasp, scream, and more
 - ⚡ **Real-time Generation** with SNAC neural codec (24kHz audio)
 - 🔧 **Multiple Attention Mechanisms**: SDPA, Flash Attention 2, Sage Attention
-- 💾 **Quantization Support**: 4-bit and 8-bit for memory-constrained GPUs (bitsandbytes)
+- 💾 **Quantization Support**: 4-bit and 8-bit for memory-constrained GPUs
+- 📦 **GGUF Model Support**: Lightweight quantized models (just `pip install gguf` - no compilation!)
 - 🛑 **Native ComfyUI Cancel**: Stop generation anytime
 - 📊 **Progress Tracking**: Real-time token generation speed (it/s)
 - 🔄 **Model Caching**: Fast subsequent generations
@@ -30,12 +31,13 @@ https://github.com/user-attachments/assets/1be0c2a0-22fb-4890-9147-d20abeb2e067
 - 🎨 **Beautiful Dark Theme** with purple accents and smooth animations
 - 👤 **5 Character Presets**: Quick-load voice templates (Male US, Female UK, Announcer, Robot, Demon)
 - 🎭 **16 Visual Emotion Buttons**: One-click emotion tag insertion at cursor position
-- ⛶ **HTML Modal Editor**: Fullscreen text editor with native textarea for longform content
+- ⛶ **Professional HTML Modal Editor**: Fullscreen text editor with native textarea for longform content
 - 🔤 **Font Size Controls**: Adjustable 12-20px font size with visual slider
-- ⌨️ **Keyboard Shortcuts**:Ctrl+Enter to save, ESC to cancel
+- ⌨️ **Advanced Keyboard Shortcuts**: Ctrl+A, Ctrl+C, Ctrl+V, Ctrl+X, Ctrl+Enter to save, ESC to cancel
 - 🔔 **Toast Notifications**: Visual feedback for save success and validation errors
 - 📝 **Inline Text Editing**: Click-to-edit with cursor positioning and drag-to-select
-- 📱 **Responsive Design**: Modal adapts to most screen sizes
+- 🖱️ **Scroll Support**: Custom themed scrollbars with mouse wheel scrolling
+- 📱 **Responsive Design**: Modal adapts to all screen sizes
 - 💡 **Contextual Tooltips**: Helpful hints on every control
 - 🎬 **Collapsible Sections**: Clean, organized interface
 - 🔄 **Smart Audio Processing**: Auto-chunking for long text with crossfade blending for seamless output
@@ -80,17 +82,17 @@ pip install bitsandbytes>=0.41.0
 ```
 
 **Memory savings:**
-- 4-bit BNB: ~6GB → ~3GB VRAM (quality loss)
-- 8-bit BNB: ~6GB → ~4GB VRAM (slight quality loss)
+- 4-bit: ~6GB → (slight quality loss)
+- 8-bit: ~6GB → (minimal quality loss)
 
 ### Accelerated Attention
 
-**Flash Attention 2** (fastest, CUDA only):
+**Flash Attention 2** (CUDA only):
 ```bash
 pip install flash-attn>=2.0.0
 ```
 
-**Sage Attention** (memory efficient):
+**Sage Attention** (memory efficient for batch):
 ```bash
 pip install sageattention>=1.0.0
 ```
@@ -181,7 +183,7 @@ snapshot_download(
 
 Restart ComfyUI to load the new nodes. The node will appear under:
 
-**Add Node → audio → Maya1 TTS (AIO)**
+**Add Node → audio → Maya1 TTS (AIO) / Maya1 TTS (AIO) Barebones**
 
 </details>
 
@@ -189,11 +191,27 @@ Restart ComfyUI to load the new nodes. The node will appear under:
 
 ## 🎮 Usage
 
+### Two Node Options
+
+**Maya1 TTS (AIO)** - Full custom UI with visual controls (recommended)
+- Beautiful dark theme with character presets, emotion buttons, and modal editor
+- Best user experience with visual feedback and tooltips
+
+**Maya1 TTS (AIO) Barebones** - Standard ComfyUI widgets only
+- For users experiencing JavaScript rendering issues (black box)
+- Same functionality, simpler interface
+- All inputs stacked vertically with standard dropdowns and text boxes
+
+---
+
 ### Node: Maya1 TTS (AIO)
 
-All-in-one node for loading models and generating speech with custom canvas UI.
+All-in-one node for loading models and generating speech with a beautiful custom canvas UI.
 
-<img width="615" height="1121" alt="Screenshot 2025-11-07 084153" src="https://github.com/user-attachments/assets/19105cc2-030a-40e3-b4d9-e18bd6d50b65" />
+| Maya1 TTS (AIO) | Maya1 TTS (AIO) Barebones |
+|:---:|:---:|
+| <img width="615" alt="Screenshot 2025-11-07 084153" src="https://github.com/user-attachments/assets/19105cc2-030a-40e3-b4d9-e18bd6d50b65" /> | <img width="648" alt="image" src="https://github.com/user-attachments/assets/7aff4fbb-c434-4d16-b4f9-22017167d455" /> |
+
 
 
 ### ✨ Custom Canvas Interface
@@ -348,6 +366,64 @@ Hello! This is Maya1 <laugh> the best open source voice AI!
 - Connect to PreviewAudio, SaveAudio, etc.
 
 </details>
+
+---
+
+### Node: Maya1 TTS (AIO) Barebones
+
+Standard ComfyUI widgets version for users experiencing JavaScript rendering issues.
+
+**When to use Barebones:**
+- Custom UI shows as a black box
+- Browser console shows JavaScript errors
+- You prefer simple, standard ComfyUI widgets
+- Working with older ComfyUI versions
+
+**Inputs (in order):**
+
+1. **voice_description** (multiline text)
+   - Describe voice characteristics in natural language
+   - Same as main node, just standard text box
+
+2. **text** (multiline text)
+   - Your script with manual emotion tags like `<laugh>` or `<cry>`
+   - Type emotion tags manually (no visual buttons in barebones version)
+
+3. **model_name** (dropdown)
+   - Select Maya1 model from `ComfyUI/models/maya1-TTS/`
+
+4. **dtype** (dropdown)
+   - `4bit (BNB)`, `8bit (BNB)`, `float16`, `bfloat16`, `float32`
+
+5. **attention_mechanism** (dropdown)
+   - `sdpa` (default), `flash_attention_2`, `sage_attention`
+
+6. **device** (dropdown)
+   - `cuda` (GPU) or `cpu`
+
+7. **keep_model_in_vram** (boolean toggle)
+   - Keep model loaded for faster subsequent generations
+
+8. **chunk_longform** (boolean toggle)
+   - Split long text with crossfading for unlimited length
+
+9. **max_tokens** (integer)
+   - Max SNAC tokens per chunk (default: 4000)
+
+10. **temperature** (float)
+    - Generation randomness (default: 0.4)
+
+11. **top_p** (float)
+    - Nucleus sampling (default: 0.9)
+
+12. **repetition_penalty** (float)
+    - Reduce repetition (default: 1.1)
+
+13. **seed** (integer)
+    - 0 = random, or set specific seed for reproducibility
+    - Use control_after_generate widget for seed management
+
+**All other features (model loading, VRAM management, chunking, progress tracking) work identically to the main node.**
 
 ---
 
@@ -601,6 +677,31 @@ Real-time generation statistics in the console:
 ---
 
 ## 🐛 Troubleshooting
+
+<details>
+<summary><b>Node Shows as Black Box (JavaScript Issues)</b></summary>
+
+**Issue:** Maya1 TTS (AIO) node appears completely black with no widgets visible.
+
+**Quick Fix:**
+Use **Maya1 TTS (AIO) Barebones** instead!
+- Same functionality, standard ComfyUI widgets only
+- No custom JavaScript required
+- Find it under: Add Node → audio → Maya1 TTS (AIO) Barebones
+
+**Debugging Steps:**
+1. Open browser DevTools (F12) → Console tab
+2. Look for JavaScript errors mentioning "maya1" or "Unexpected token"
+3. Try hard refresh: Ctrl+Shift+R (Windows/Linux) or Cmd+Shift+R (Mac)
+4. Clear browser cache completely
+5. Test in incognito/private window
+6. Check if maya1_tts.js loads in Network tab (should be 200 status)
+7. Disable browser extensions (ad blockers, script blockers)
+8. Update ComfyUI to latest version
+
+**Note:** The barebones version is specifically designed for this issue!
+
+</details>
 
 <details>
 <summary><b>Model Not Found</b></summary>

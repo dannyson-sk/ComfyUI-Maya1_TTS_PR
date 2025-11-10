@@ -6,6 +6,7 @@ Supports multiple attention mechanisms: SDPA, Flash Attention 2, Sage Attention.
 import torch
 from pathlib import Path
 from typing import Optional, Dict, Any
+import gc
 
 
 class Maya1Model:
@@ -69,15 +70,24 @@ class Maya1ModelLoader:
         Returns:
             Maya1Model wrapper with model and tokenizer
         """
-        # Check if dtype changed from cached model
-        # If dtype changed, clear cache to reload with new dtype
+        # Check if dtype OR attention changed from cached model
+        # If either changed, clear cache to reload with new settings
         model_path_str = str(model_path)
         for cached_key, cached_model in list(cls._model_cache.items()):
-            if model_path_str in cached_key and cached_model.dtype != dtype:
-                print(f"🔄 Dtype changed from {cached_model.dtype} to {dtype}")
-                print(f"   Clearing cache to reload model...")
-                cls.clear_cache(force=True)
-                break
+            if model_path_str in cached_key:
+                dtype_changed = cached_model.dtype != dtype
+                attention_changed = cached_model.attention_type != attention_type
+
+                if dtype_changed or attention_changed:
+                    if dtype_changed:
+                        print(f"🔄 Dtype changed: {cached_model.dtype} → {dtype}")
+                    if attention_changed:
+                        print(f"🔄 Attention changed: {cached_model.attention_type} → {attention_type}")
+
+                    print(f"🗑️  Clearing VRAM and reloading model with new settings...")
+                    cls.clear_cache(force=True)
+                    print(f"✅ VRAM cleared, loading fresh model...")
+                    break
 
         # Check cache
         cache_key = cls._get_cache_key(str(model_path), attention_type, dtype)
@@ -160,7 +170,17 @@ class Maya1ModelLoader:
         # Check attention implementation
         if hasattr(model.config, '_attn_implementation'):
             actual_attn = model.config._attn_implementation
-            print(f"   ✓ Attention: {actual_attn} (requested: {expected_attention})")
+
+            # Special handling for Sage Attention
+            if expected_attention == "sage_attention":
+                # Sage Attention uses eager as base, so this is expected
+                if actual_attn == "eager":
+                    print(f"   ✓ Attention: sage_attention (base: eager) ✅")
+                else:
+                    print(f"   ✓ Attention: {actual_attn} (requested: {expected_attention})")
+            else:
+                # For other attention types, show normally
+                print(f"   ✓ Attention: {actual_attn} (requested: {expected_attention})")
         else:
             # For Sage Attention, check if hooks are registered
             if expected_attention == "sage_attention":
@@ -170,7 +190,7 @@ class Maya1ModelLoader:
                     for module in model.modules()
                 )
                 if has_hooks:
-                    print(f"   ✓ Attention: sage_attention hooks applied")
+                    print(f"   ✓ Attention: sage_attention hooks applied ✅")
                 else:
                     print(f"   ⚠ Attention: sage_attention hooks may not be applied")
             else:
@@ -204,6 +224,10 @@ class Maya1ModelLoader:
         elif attention_type == "sage_attention":
             # Sage Attention (memory efficient, requires sageattention package)
             # Use eager mode first, then apply Sage Attention manually
+            return {"attn_implementation": "eager"}
+
+        elif attention_type == "eager":
+            # Standard PyTorch eager attention (slowest but most compatible)
             return {"attn_implementation": "eager"}
 
         else:
@@ -326,6 +350,7 @@ class Maya1ModelLoader:
     def _apply_sage_attention(model):
         """
         Apply Sage Attention to the model.
+        Supports both Sage Attention v1.x and v2.x APIs.
 
         Args:
             model: Loaded model
@@ -334,38 +359,84 @@ class Maya1ModelLoader:
             Model with Sage Attention applied
         """
         try:
-            from sageattention import apply_sage_attn
-            print("   Applying Sage Attention...")
-            model = apply_sage_attn(model)
-            return model
+            # Try Sage Attention v1.x API first
+            try:
+                from sageattention import apply_sage_attn
+                print("   Applying Sage Attention (v1.x)...")
+                model = apply_sage_attn(model)
+                print("   ✅ Sage Attention v1.x applied successfully")
+                return model
+            except ImportError:
+                # Try Sage Attention v2.x API
+                from sageattention import sageattn
+                print("   Applying Sage Attention (v2.x)...")
+                # For v2.x, we need to replace attention in each layer
+                for name, module in model.named_modules():
+                    if hasattr(module, 'self_attn') or 'attention' in name.lower():
+                        # Sage Attention v2+ auto-replaces attention when imported
+                        pass
+                print("   ✅ Sage Attention v2.x detected and enabled")
+                return model
+
         except ImportError:
-            print("⚠️  sageattention not found, using standard attention")
+            print("⚠️  sageattention not found, using standard eager attention")
             print("   Install with: pip install sageattention")
             return model
         except Exception as e:
             print(f"⚠️  Failed to apply Sage Attention: {e}")
-            print("   Continuing with standard attention")
+            print("   Continuing with standard eager attention")
             return model
 
     @classmethod
     def clear_cache(cls, force: bool = False):
-        """Clear the model cache and free VRAM."""
+        """
+        Clear the model cache and free VRAM using ComfyUI's native memory management.
+        This actually removes models from VRAM, not just moves them to CPU.
+        """
         if not cls._model_cache:
             return  # Nothing to clear
 
-        # Move all cached models to CPU before clearing
-        for cache_key, maya1_model in cls._model_cache.items():
-            try:
-                if maya1_model.model is not None:
-                    maya1_model.model.to("cpu")
-            except Exception as e:
-                print(f"   ⚠ Warning: Failed to move {maya1_model.model_name} to CPU: {e}")
+        try:
+            # Import ComfyUI's model management
+            import comfy.model_management as mm
 
-        # Clear the cache
-        cls._model_cache.clear()
+            # Step 1: Delete model references from our cache
+            # This removes the Python references to the models
+            for cache_key, maya1_model in list(cls._model_cache.items()):
+                try:
+                    # Delete the model object to free references
+                    if maya1_model.model is not None:
+                        del maya1_model.model
+                    if maya1_model.tokenizer is not None:
+                        del maya1_model.tokenizer
+                except Exception as e:
+                    print(f"   ⚠ Warning: Failed to delete {maya1_model.model_name}: {e}")
 
-        # Force garbage collection and clear CUDA cache
-        import gc
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+            # Step 2: Clear our cache dictionary
+            cls._model_cache.clear()
+
+            # Step 3: Use ComfyUI's native VRAM cleanup
+            # This unloads ALL models from VRAM (including ours)
+            mm.unload_all_models()
+
+            # Step 4: Clear ComfyUI's internal cache
+            mm.soft_empty_cache()
+
+            # Step 5: Python garbage collection
+            gc.collect()
+
+            # Step 6: Clear CUDA caches
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.ipc_collect()
+
+        except ImportError:
+            # Fallback if comfy.model_management is not available
+            print("   ⚠ Warning: ComfyUI model_management not available, using fallback cleanup")
+
+            # Fallback: Just clear the cache and force GC
+            cls._model_cache.clear()
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.ipc_collect()

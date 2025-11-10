@@ -1,6 +1,7 @@
 """
-Maya1 TTS Combined Node for ComfyUI.
-All-in-one node with model loading and TTS generation.
+Maya1 TTS Barebones Node for ComfyUI.
+All-in-one node with standard ComfyUI widgets (no custom JavaScript UI).
+Use this version if you have issues with the custom JavaScript rendering.
 """
 
 import torch
@@ -18,6 +19,7 @@ from ..core import (
     get_model_path,
     get_maya1_models_dir,
     format_prompt,
+    check_interruption,
     load_emotions_list,
     crossfade_audio
 )
@@ -134,90 +136,106 @@ def split_text_smartly(text: str, max_words_per_chunk: int = 100) -> List[str]:
     return chunks if chunks else [text]
 
 
-class Maya1TTSCombinedNode:
+class Maya1TTSBarebonesNode:
     """
-    Combined Maya1 TTS node - loads model and generates speech in one node.
+    Barebones Maya1 TTS node - standard ComfyUI widgets only (no custom JavaScript).
+
+    Use this version if you're experiencing issues with the custom UI rendering.
 
     Features:
     - Model loading with caching
     - Voice design through natural language
-    - 20+ emotion tags with clickable buttons
+    - Emotion tags support (manually type <laugh>, <cry>, etc.)
     - Native ComfyUI cancel support
     - Real-time progress tracking
     - VRAM management
     """
 
-    DESCRIPTION = ""
+    DESCRIPTION = "Maya1 TTS with standard widgets (for users with JavaScript rendering issues)"
 
     @classmethod
     def INPUT_TYPES(cls):
         """Define input parameters for the node."""
         return {
             "required": {
-                # Model settings
-                "model_name": (discover_maya1_models(), {
-                    "default": discover_maya1_models()[0] if discover_maya1_models() else None
-                }),
-                "dtype": (["4bit (BNB)", "8bit (BNB)", "float16", "bfloat16", "float32"], {
-                    "default": "bfloat16"
-                }),
-                "attention_mechanism": (["sdpa", "eager", "flash_attention_2", "sage_attention"], {
-                    "default": "sdpa"
-                }),
-                "device": (["cuda", "cpu"], {
-                    "default": "cuda"
-                }),
-
-                # Voice and text
+                # Voice and text (top)
                 "voice_description": ("STRING", {
                     "multiline": True,
                     "default": "Realistic male voice in the 30s age with american accent. Normal pitch, warm timbre, conversational pacing.",
-                    "dynamicPrompts": False
+                    "dynamicPrompts": False,
+                    "tooltip": "Describe your desired voice using natural language. Include: age (20s-50s), gender (male/female), accent (American/British/etc), pitch (low/normal/high), timbre (warm/gravelly/smooth), pacing (fast/conversational/slow), tone (happy/calm/energetic)"
                 }),
                 "text": ("STRING", {
                     "multiline": True,
                     "default": "Hello! This is Maya1 <laugh> the best open source voice AI model with emotions.",
-                    "dynamicPrompts": False
+                    "dynamicPrompts": False,
+                    "tooltip": "Your script text to synthesize. Add emotion tags anywhere in the text (type manually - no visual buttons in barebones mode). All 17 available tags: <laugh>, <laugh_harder>, <giggle>, <chuckle>, <cry>, <sigh>, <gasp>, <whisper>, <angry>, <scream>, <snort>, <yawn>, <cough>, <sneeze>, <breathing>, <humming>, <throat_clearing>"
+                }),
+
+                # Model settings
+                "model_name": (discover_maya1_models(), {
+                    "default": discover_maya1_models()[0] if discover_maya1_models() else None,
+                    "tooltip": "Select Maya1 model from ComfyUI/models/maya1-TTS/ folder. Models are auto-discovered on startup. Download from: huggingface.co/maya-research/maya1"
+                }),
+                "dtype": (["4bit (BNB)", "8bit (BNB)", "float16", "bfloat16", "float32"], {
+                    "default": "bfloat16",
+                    "tooltip": "Model precision. 4bit/8bit save VRAM but are SLOWER. Use float16/bfloat16 if you have 10GB+ VRAM for best speed. 4bit≈6GB, 8bit≈7GB, float16/bfloat16≈8-9GB, float32≈16GB"
+                }),
+                "attention_mechanism": (["sdpa", "eager", "flash_attention_2", "sage_attention"], {
+                    "default": "sdpa",
+                    "tooltip": "Attention algorithm. SDPA (default) is fastest for single TTS. Eager is standard PyTorch (slower). Flash Attention 2 helps with batch processing. Sage Attention is memory efficient"
+                }),
+                "device": (["cuda", "cpu"], {
+                    "default": "cuda",
+                    "tooltip": "Processing device. CUDA (GPU) is recommended for speed. CPU works but is much slower. Will auto-fallback to CPU if CUDA unavailable"
                 }),
 
                 # Generation settings
                 "keep_model_in_vram": ("BOOLEAN", {
-                    "default": True
+                    "default": True,
+                    "tooltip": "Keep model loaded in VRAM after generation. True = faster repeated generations but uses VRAM. False = frees VRAM after each generation but slower"
                 }),
-                "temperature": ("FLOAT", {
-                    "default": 0.4,  # Official Maya1 recommendation (from transformers_inference.py)
-                    "min": 0.1,
-                    "max": 2.0,
-                    "step": 0.05
-                }),
-                "top_p": ("FLOAT", {
-                    "default": 0.9,
-                    "min": 0.1,
-                    "max": 1.0,
-                    "step": 0.05
+                "chunk_longform": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "Split long text into chunks at sentence boundaries with smooth crossfading. Enables unlimited audio length beyond the 18-20s limit. EXPERIMENTAL - may have quality/timing issues"
                 }),
                 "max_tokens": ("INT", {
                     "default": 4000,
                     "min": 100,
                     "max": 16000,
                     "step": 100,
-                    "tooltip": "Max SNAC tokens per chunk. Higher = longer audio per chunk (~50 tokens/word). 4000 tokens ≈ 30-40s audio"
+                    "tooltip": "Max SNAC tokens per chunk. Higher = longer audio per chunk (~50 tokens/word). 4000 tokens ≈ 30-40s audio. Increase if audio cuts off too early"
+                }),
+                "temperature": ("FLOAT", {
+                    "default": 0.4,
+                    "min": 0.1,
+                    "max": 2.0,
+                    "step": 0.05,
+                    "tooltip": "Controls randomness/creativity. Lower (0.1-0.3) = more consistent/predictable. Higher (0.5-1.0) = more varied/creative. 0.4 is official Maya1 recommendation"
+                }),
+                "top_p": ("FLOAT", {
+                    "default": 0.9,
+                    "min": 0.1,
+                    "max": 1.0,
+                    "step": 0.05,
+                    "tooltip": "Nucleus sampling - controls diversity of token selection. 0.9 (default) works well for natural speech. Lower = more focused, higher = more diverse. Keep at 0.9 unless experimenting"
                 }),
                 "repetition_penalty": ("FLOAT", {
                     "default": 1.1,
                     "min": 1.0,
                     "max": 2.0,
-                    "step": 0.05
+                    "step": 0.05,
+                    "tooltip": "Reduces repetitive speech patterns. 1.0 = no penalty, higher = stronger penalty against repetition. 1.1 is a good default. Increase to 1.2-1.3 if speech sounds too repetitive"
                 }),
                 "seed": ("INT", {
                     "default": 0,
                     "min": 0,
-                    "max": 0xffffffffffffffff
+                    "max": 0xffffffffffffffff,
+                    "tooltip": "Random seed for reproducibility. 0 = random seed each time. Set specific number (1-999999) for same result every time. Use control_after_generate widget to auto-increment/randomize"
                 }),
-                "chunk_longform": ("BOOLEAN", {
-                    "default": False,
-                    "tooltip": "Split long text into chunks at sentence boundaries with smooth crossfading. Enables unlimited audio length beyond the 18-20s limit"
-                }),
+            },
+            "hidden": {
+                "control_after_generate": "COMBO"
             }
         }
 
@@ -251,20 +269,20 @@ class Maya1TTSCombinedNode:
 
     def generate_speech(
         self,
+        voice_description: str,
+        text: str,
         model_name: str,
         dtype: str,
         attention_mechanism: str,
         device: str,
-        voice_description: str,
-        text: str,
         keep_model_in_vram: bool,
+        chunk_longform: bool,
+        max_tokens: int,
         temperature: float,
         top_p: float,
-        max_tokens: int,
         repetition_penalty: float,
         seed: int,
-        chunk_longform: bool,
-        emotion_tag_insert: str = "(none)",
+        control_after_generate: str = "randomize",
         chunk_index: int = None,
         total_chunks: int = None
     ) -> Tuple[dict]:
@@ -405,7 +423,6 @@ class Maya1TTSCombinedNode:
             print("=" * 70)
 
             # Create outer progress bar for chunks (layered progress)
-            import comfy.utils
             chunk_progress = comfy.utils.ProgressBar(len(text_chunks))
 
             all_audio_data = []
@@ -424,20 +441,20 @@ class Maya1TTSCombinedNode:
                 # Recursively call generate_speech for this chunk with chunk_longform=False
                 # to avoid infinite recursion
                 chunk_audio = self.generate_speech(
+                    voice_description=voice_description,
+                    text=chunk_text,
                     model_name=model_name,
                     dtype=dtype,
                     attention_mechanism=attention_mechanism,
                     device=device,
-                    voice_description=voice_description,
-                    text=chunk_text,
                     keep_model_in_vram=True,  # Keep in VRAM between chunks
+                    chunk_longform=False,  # Disable chunking for recursive calls
+                    max_tokens=max_tokens,
                     temperature=temperature,
                     top_p=top_p,
-                    max_tokens=max_tokens,
                     repetition_penalty=repetition_penalty,
                     seed=actual_seed,  # Use same seed for all chunks
-                    chunk_longform=False,  # Disable chunking for recursive calls
-                    emotion_tag_insert=emotion_tag_insert,
+                    control_after_generate=control_after_generate,
                     chunk_index=i + 1,  # Pass chunk context for layered progress
                     total_chunks=len(text_chunks)
                 )
@@ -446,10 +463,10 @@ class Maya1TTSCombinedNode:
                 chunk_audio_dict = chunk_audio[0]
                 chunk_waveform = chunk_audio_dict["waveform"]
                 sample_rate = chunk_audio_dict["sample_rate"]
+                all_audio_data.append(chunk_waveform)
 
                 # Update chunk progress (outer progress bar)
                 chunk_progress.update(1)
-                all_audio_data.append(chunk_waveform)
 
                 mm.throw_exception_if_processing_interrupted()
 
@@ -542,9 +559,8 @@ class Maya1TTSCombinedNode:
         print(f"🎵 Generating speech (max {max_tokens} tokens)...")
 
         try:
-            # Setup progress tracking
-            from comfy.utils import ProgressBar
-            progress_bar = ProgressBar(max_tokens)
+            # Setup progress tracking (inner progress bar for token generation)
+            progress_bar = comfy.utils.ProgressBar(max_tokens)
 
             # Create stopping criteria for cancellation support
             from transformers import StoppingCriteria, StoppingCriteriaList
@@ -723,9 +739,9 @@ class Maya1TTSCombinedNode:
 
 # ComfyUI node mappings
 NODE_CLASS_MAPPINGS = {
-    "Maya1TTS_Combined": Maya1TTSCombinedNode
+    "Maya1TTS_Barebones": Maya1TTSBarebonesNode
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "Maya1TTS_Combined": "Maya1 TTS (AIO)"
+    "Maya1TTS_Barebones": "Maya1 TTS (AIO) Barebones"
 }
