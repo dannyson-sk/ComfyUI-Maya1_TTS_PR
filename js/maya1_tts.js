@@ -78,7 +78,7 @@ class Maya1TTSCanvas {
         this.temperatureWidget = node.widgets?.find(w => w.name === 'temperature');
         this.topPWidget = node.widgets?.find(w => w.name === 'top_p');
         this.repPenaltyWidget = node.widgets?.find(w => w.name === 'repetition_penalty');
-        this.maxTokensWidget = node.widgets?.find(w => w.name === 'max_tokens');
+        this.maxNewTokensWidget = node.widgets?.find(w => w.name === 'max_new_tokens');
         this.seedWidget = node.widgets?.find(w => w.name === 'seed');
         this.controlAfterWidget = node.widgets?.find(w => w.name === 'control_after_generate');
         this.debugWidget = node.widgets?.find(w => w.name === 'debug_mode');
@@ -1185,7 +1185,7 @@ class Maya1TTSCanvas {
 
         // 2x2 grid for main generation parameters
         const gridFields = [
-            { label: "Max Tokens", widget: this.maxTokensWidget },
+            { label: "Max New Tokens", widget: this.maxNewTokensWidget },
             { label: "Temperature", widget: this.temperatureWidget },
             { label: "Top P", widget: this.topPWidget },
             { label: "Rep Penalty", widget: this.repPenaltyWidget }
@@ -1849,7 +1849,7 @@ class Maya1TTSCanvas {
             'TextField': 'text',
             'Keep in VRAMToggle': 'keep_model_in_vram',
             'Longform ChunkingToggle': 'chunk_longform',
-            'Max TokensField': 'max_tokens',
+            'Max New TokensField': 'max_new_tokens',
             'TemperatureField': 'temperature',
             'Top PField': 'top_p',
             'Rep PenaltyField': 'repetition_penalty',
