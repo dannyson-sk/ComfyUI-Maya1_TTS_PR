@@ -13,8 +13,9 @@ class Maya1TTSCanvas {
         this.characterPresets = characterPresets;
         this.emotionTags = emotionTags;
 
-        // Control positions
+        // Control positions - using double buffer to prevent race conditions
         this.controls = {};
+        this.controlsBuffer = {}; // Double buffer for atomic updates
 
         // UI state
         this.hoverElement = null;
@@ -32,12 +33,25 @@ class Maya1TTSCanvas {
         this.wheelHandler = null; // Store bound wheel handler
         this.mouseUpHandler = null; // Store bound mouseup handler for drag end
         this.htmlModalOpen = false; // Track if HTML modal is open
+        this.lightboxOpen = false; // FIX: Added missing lightboxOpen variable (was only htmlModalOpen)
         this.htmlModalElement = null; // Reference to HTML modal element
+        this.htmlModalEscHandler = null; // Store ESC key handler for cleanup
         this.htmlModalFontSize = 15; // Default font size for modal textarea
         this.cursorVisible = true; // Cursor blink state
         this.cursorBlinkInterval = null; // Interval for cursor blinking
+        this.pendingCanvasDirty = false; // Debounce flag for canvas redraws
 
         this.setupNode();
+    }
+
+    // FIX: Debounced canvas dirty to reduce excessive redraws
+    setDirtyCanvas(foreground = true, background = false) {
+        if (this.pendingCanvasDirty) return; // Already pending
+        this.pendingCanvasDirty = true;
+        requestAnimationFrame(() => {
+            this.pendingCanvasDirty = false;
+            this.node.setDirtyCanvas(foreground, background);
+        });
     }
 
     setupNode() {
@@ -103,7 +117,7 @@ class Maya1TTSCanvas {
             if (self.isDragging && e.buttons === 0) {
                 self.isDragging = false;
                 self.dragStartPos = null;
-                node.setDirtyCanvas(true, true);
+                self.setDirtyCanvas(true, true);
             }
 
             if (self.isDragging) {
@@ -145,7 +159,7 @@ class Maya1TTSCanvas {
         this.wheelHandler = (e) => this.handleWheel(e);
         document.addEventListener('wheel', this.wheelHandler, { passive: false, capture: true });
 
-        this.node.setDirtyCanvas(true, true);
+        this.setDirtyCanvas(true, true);
     }
 
     stopEditing(save = true) {
@@ -193,7 +207,7 @@ class Maya1TTSCanvas {
         this.selectionEnd = null;
         this.isDragging = false;
         this.dragStartPos = null;
-        this.node.setDirtyCanvas(true, true);
+        this.setDirtyCanvas(true, true);
     }
 
     startCursorBlink() {
@@ -206,7 +220,7 @@ class Maya1TTSCanvas {
         // Blink cursor every 530ms (standard blink rate)
         this.cursorBlinkInterval = setInterval(() => {
             this.cursorVisible = !this.cursorVisible;
-            this.node.setDirtyCanvas(true, true);
+            this.setDirtyCanvas(true, true);
         }, 530);
     }
 
@@ -615,6 +629,7 @@ class Maya1TTSCanvas {
         this.htmlModalElement = overlay;
         this.htmlModalEscHandler = escHandler;
         this.htmlModalOpen = true;
+        this.lightboxOpen = true; // FIX: Also set lightboxOpen to match
 
         // Add to DOM and focus textarea
         document.body.appendChild(overlay);
@@ -628,25 +643,23 @@ class Maya1TTSCanvas {
             // Prevent any interaction during close
             element.style.pointerEvents = 'none';
 
-            // Listen for animation end to remove element at exact right time
-            const handleAnimationEnd = () => {
-                if (element.parentNode) {
-                    element.parentNode.removeChild(element);
-                }
-                this.htmlModalElement = null;
-            };
-
-            element.addEventListener('animationend', handleAnimationEnd, { once: true });
+            // FIX: Use only timeout to avoid double-removal race condition
+            // Clear reference immediately to prevent double-close
+            this.htmlModalElement = null;
 
             // Start fade out animation
             element.style.animation = 'fadeOut 0.2s ease forwards';
 
-            // Fallback timeout in case animationend doesn't fire
+            // Single removal after animation completes
             setTimeout(() => {
                 if (element.parentNode) {
-                    element.parentNode.removeChild(element);
+                    try {
+                        element.parentNode.removeChild(element);
+                    } catch (err) {
+                        // Element already removed, ignore error
+                        console.debug('Modal element already removed:', err);
+                    }
                 }
-                this.htmlModalElement = null;
             }, 250);
         }
 
@@ -656,7 +669,8 @@ class Maya1TTSCanvas {
         }
 
         this.htmlModalOpen = false;
-        this.node.setDirtyCanvas(true, true);
+        this.lightboxOpen = false; // FIX: Also set lightboxOpen to match
+        this.setDirtyCanvas(true, true);
     }
 
     showSaveNotification() {
@@ -774,56 +788,68 @@ class Maya1TTSCanvas {
     }
 
     drawInterface(ctx) {
-        const node = this.node;
-        const margin = 15;
-        const spacing = 8;
-        let currentY = LiteGraph.NODE_TITLE_HEIGHT + 10;
+        try {
+            const node = this.node;
+            const margin = 15;
+            const spacing = 8;
+            let currentY = LiteGraph.NODE_TITLE_HEIGHT + 10;
 
-        this.controls = {};
+            // FIX: Use buffer to prevent race condition with mouse events
+            // Build controls in buffer, then atomically swap at end
+            this.controlsBuffer = {};
 
-        // EXACT LAYOUT AS SPECIFIED:
-        // 1. Character Presets
-        currentY = this.drawCharacterPresets(ctx, margin, currentY);
-        currentY += spacing;
+            // EXACT LAYOUT AS SPECIFIED:
+            // 1. Character Presets
+            currentY = this.drawCharacterPresets(ctx, margin, currentY);
+            currentY += spacing;
 
-        // 2. Voice Description
-        currentY = this.drawTextField(ctx, "Voice Description", this.voiceWidget, margin, currentY, 70);
-        currentY += spacing;
+            // 2. Voice Description
+            currentY = this.drawTextField(ctx, "Voice Description", this.voiceWidget, margin, currentY, 70);
+            currentY += spacing;
 
-        // 3. Text Input
-        currentY = this.drawTextField(ctx, "Text", this.textWidget, margin, currentY, 80);
-        currentY += spacing;
+            // 3. Text Input
+            currentY = this.drawTextField(ctx, "Text", this.textWidget, margin, currentY, 80);
+            currentY += spacing;
 
-        // 4. Emotion Tags (collapsible)
-        currentY = this.drawEmotionSection(ctx, margin, currentY);
-        currentY += spacing * 2;
+            // 4. Emotion Tags (collapsible)
+            currentY = this.drawEmotionSection(ctx, margin, currentY);
+            currentY += spacing * 2;
 
-        // 5. Model + Dtype (2 columns)
-        currentY = this.drawTwoColumnDropdowns(ctx, "Model", this.modelWidget, "Dtype", this.dtypeWidget, margin, currentY);
-        currentY += spacing;
+            // 5. Model + Dtype (2 columns)
+            currentY = this.drawTwoColumnDropdowns(ctx, "Model", this.modelWidget, "Dtype", this.dtypeWidget, margin, currentY);
+            currentY += spacing;
 
-        // 6. Attention + Device (2 columns)
-        currentY = this.drawTwoColumnDropdowns(ctx, "Attention", this.attentionWidget, "Device", this.deviceWidget, margin, currentY);
-        currentY += spacing;
+            // 6. Attention + Device (2 columns)
+            currentY = this.drawTwoColumnDropdowns(ctx, "Attention", this.attentionWidget, "Device", this.deviceWidget, margin, currentY);
+            currentY += spacing;
 
-        // 7. Keep VRAM + Longform Chunking (2 columns toggles)
-        currentY = this.drawTwoColumnToggles(ctx, "Keep in VRAM", this.keepVramWidget, "Longform Chunking", this.chunkLongformWidget, margin, currentY);
-        currentY += spacing * 2;
+            // 7. Keep VRAM + Longform Chunking (2 columns toggles)
+            currentY = this.drawTwoColumnToggles(ctx, "Keep in VRAM", this.keepVramWidget, "Longform Chunking", this.chunkLongformWidget, margin, currentY);
+            currentY += spacing * 2;
 
-        // 8. Number Grid 2x3 (inline editing)
-        currentY = this.drawNumberGrid(ctx, margin, currentY);
-        currentY += spacing;
+            // 8. Number Grid 2x3 (inline editing)
+            currentY = this.drawNumberGrid(ctx, margin, currentY);
+            currentY += spacing;
 
-        // 9. Control After Generate
-        currentY = this.drawDropdownField(ctx, "Control After Generate", this.controlAfterWidget, margin, currentY);
-        currentY += spacing;
+            // 9. Control After Generate
+            currentY = this.drawDropdownField(ctx, "Control After Generate", this.controlAfterWidget, margin, currentY);
+            currentY += spacing;
 
-        // Debug mode widget hidden but still functional (controlled by backend)
+            // Debug mode widget hidden but still functional (controlled by backend)
 
-        node.size[1] = Math.max(currentY + 20, 700);
+            node.size[1] = Math.max(currentY + 20, 700);
 
-        // Draw tooltip last so it appears on top of everything
-        this.drawTooltip(ctx);
+            // FIX: Atomic swap - this prevents race condition where mouse events
+            // read controls while they're being rebuilt
+            this.controls = this.controlsBuffer;
+
+            // Draw tooltip last so it appears on top of everything
+            this.drawTooltip(ctx);
+        } catch (err) {
+            // FIX: Catch any drawing errors to prevent complete UI failure
+            console.error('Error in drawInterface:', err);
+            // Keep last known good controls if drawing fails
+        }
     }
 
     drawCharacterPresets(ctx, x, y) {
@@ -879,7 +905,7 @@ class Maya1TTSCanvas {
             ctx.textBaseline = "middle";
             ctx.fillText(`${preset.emoji} ${preset.name}`, btnX + buttonWidth / 2, y + buttonHeight / 2);
 
-            this.controls[`preset${i}Btn`] = { x: btnX, y, w: buttonWidth, h: buttonHeight, preset };
+            this.controlsBuffer[`preset${i}Btn`] = { x: btnX, y, w: buttonWidth, h: buttonHeight, preset };
         }
 
         ctx.textAlign = "left";
@@ -1044,10 +1070,10 @@ class Maya1TTSCanvas {
             ctx.textBaseline = "middle";
             ctx.fillText("⛶", expandBtnX + expandBtnSize / 2, expandBtnY + expandBtnSize / 2);
 
-            this.controls[`${label}ExpandBtn`] = { x: expandBtnX, y: expandBtnY, w: expandBtnSize, h: expandBtnSize, label };
+            this.controlsBuffer[`${label}ExpandBtn`] = { x: expandBtnX, y: expandBtnY, w: expandBtnSize, h: expandBtnSize, label };
         }
 
-        this.controls[`${label}Field`] = { x, y, w: width, h: height, widget, label, textX: x + padding, textY: y + padding };
+        this.controlsBuffer[`${label}Field`] = { x, y, w: width, h: height, widget, label, textX: x + padding, textY: y + padding };
 
         return y + height + 10;
     }
@@ -1098,7 +1124,7 @@ class Maya1TTSCanvas {
         ctx.textAlign = "right";
         ctx.fillText("▼", x + width - 6, y + height - 8);
 
-        this.controls[`${label}Dropdown`] = { x, y, w: width, h: height, widget, label };
+        this.controlsBuffer[`${label}Dropdown`] = { x, y, w: width, h: height, widget, label };
     }
 
     drawTwoColumnToggles(ctx, label1, widget1, label2, widget2, x, y) {
@@ -1149,7 +1175,7 @@ class Maya1TTSCanvas {
         ctx.arc(knobX + 8, switchY + 10, 8, 0, Math.PI * 2);
         ctx.fill();
 
-        this.controls[`${label}Toggle`] = { x, y, w: width, h: height, widget, label };
+        this.controlsBuffer[`${label}Toggle`] = { x, y, w: width, h: height, widget, label };
     }
 
     drawNumberGrid(ctx, x, y) {
@@ -1246,7 +1272,7 @@ class Maya1TTSCanvas {
             ctx.fillRect(cursorX, y + height - 20, 2, 14);
         }
 
-        this.controls[`${label}Field`] = { x, y, w: width, h: height, widget, label, isNumber: true };
+        this.controlsBuffer[`${label}Field`] = { x, y, w: width, h: height, widget, label, isNumber: true };
     }
 
     drawDropdownField(ctx, label, widget, x, y) {
@@ -1277,7 +1303,7 @@ class Maya1TTSCanvas {
         ctx.font = "10px Arial";
         ctx.fillText("▼", x + width - 12, y + height / 2);
 
-        this.controls[`${label}Dropdown`] = { x, y, w: width, h: height, widget, label };
+        this.controlsBuffer[`${label}Dropdown`] = { x, y, w: width, h: height, widget, label };
 
         return y + height + 10;
     }
@@ -1318,7 +1344,7 @@ class Maya1TTSCanvas {
         ctx.arc(knobX + 10, switchY + 12, 10, 0, Math.PI * 2);
         ctx.fill();
 
-        this.controls[`${label}Toggle`] = { x, y, w: width, h: height, widget, label };
+        this.controlsBuffer[`${label}Toggle`] = { x, y, w: width, h: height, widget, label };
 
         return y + height + 10;
     }
@@ -1343,7 +1369,7 @@ class Maya1TTSCanvas {
         ctx.textBaseline = "middle";
         ctx.fillText(`${arrow} Emotion Tags`, x + 8, y + headerHeight / 2);
 
-        this.controls["emotionHeader"] = { x, y, w: width, h: headerHeight };
+        this.controlsBuffer["emotionHeader"] = { x, y, w: width, h: headerHeight };
 
         y += headerHeight + 8;
 
@@ -1407,7 +1433,7 @@ class Maya1TTSCanvas {
             ctx.textBaseline = "middle";
             ctx.fillText(emotion.display, btnX + buttonWidth / 2, btnY + buttonHeight / 2);
 
-            this.controls[`emotion${i}Btn`] = { x: btnX, y: btnY, w: buttonWidth, h: buttonHeight, emotion };
+            this.controlsBuffer[`emotion${i}Btn`] = { x: btnX, y: btnY, w: buttonWidth, h: buttonHeight, emotion };
 
             col++;
             if (col >= 4) {
@@ -1449,13 +1475,13 @@ class Maya1TTSCanvas {
                     this.clickedButtons[key] = true;
                     setTimeout(() => {
                         delete this.clickedButtons[key];
-                        node.setDirtyCanvas(true, true);
+                        self.setDirtyCanvas(true, true);
                     }, 150);
 
                     if (key.startsWith('preset')) {
                         if (this.voiceWidget && ctrl.preset) {
                             this.voiceWidget.value = ctrl.preset.description;
-                            node.setDirtyCanvas(true, true);
+                            self.setDirtyCanvas(true, true);
                         }
                     } else if (key.startsWith('emotion')) {
                         if (this.textWidget && ctrl.emotion) {
@@ -1468,7 +1494,7 @@ class Maya1TTSCanvas {
                                 // Append to end if not editing
                                 this.textWidget.value += (this.textWidget.value ? " " : "") + ctrl.emotion.tag + " ";
                             }
-                            node.setDirtyCanvas(true, true);
+                            self.setDirtyCanvas(true, true);
                         }
                     }
                     return true;
@@ -1509,12 +1535,12 @@ class Maya1TTSCanvas {
                                     document.removeEventListener('mouseup', this.mouseUpHandler, true);
                                     this.mouseUpHandler = null;
                                 }
-                                node.setDirtyCanvas(true, true);
+                                self.setDirtyCanvas(true, true);
                             };
                             document.addEventListener('mouseup', this.mouseUpHandler, true);
                         }
 
-                        node.setDirtyCanvas(true, true);
+                        self.setDirtyCanvas(true, true);
                         return true;
                     }
 
@@ -1555,7 +1581,7 @@ class Maya1TTSCanvas {
                             callback: (v) => {
                                 if (ctrl.widget) {
                                     ctrl.widget.value = v;
-                                    node.setDirtyCanvas(true, true);
+                                    self.setDirtyCanvas(true, true);
                                 }
                             },
                             node: node
@@ -1565,12 +1591,12 @@ class Maya1TTSCanvas {
                 } else if (key.endsWith('Toggle')) {
                     if (ctrl.widget) {
                         ctrl.widget.value = !ctrl.widget.value;
-                        node.setDirtyCanvas(true, true);
+                        self.setDirtyCanvas(true, true);
                     }
                     return true;
                 } else if (key === "emotionHeader") {
                     this.emotionsCollapsed = !this.emotionsCollapsed;
-                    node.setDirtyCanvas(true, true);
+                    self.setDirtyCanvas(true, true);
                     return true;
                 }
             }
@@ -1601,7 +1627,7 @@ class Maya1TTSCanvas {
             this.selectionEnd = this.editingValue.length;
             this.cursorPos = this.editingValue.length;
             this.cursorVisible = true; // Make cursor visible
-            this.node.setDirtyCanvas(true, true);
+            this.setDirtyCanvas(true, true);
             return;
         } else if (isCtrl && e.key === 'c') {
             // Copy - allow default but also handle manually
@@ -1636,7 +1662,7 @@ class Maya1TTSCanvas {
                     this.cursorPos += text.length;
                 }
                 this.resetCursorBlink();
-                this.node.setDirtyCanvas(true, true);
+                this.setDirtyCanvas(true, true);
             }).catch(err => console.error('Paste failed:', err));
             return;
         } else if (isCtrl && e.key === 'x') {
@@ -1655,7 +1681,7 @@ class Maya1TTSCanvas {
                 this.selectionStart = null;
                 this.selectionEnd = null;
                 this.resetCursorBlink();
-                this.node.setDirtyCanvas(true, true);
+                this.setDirtyCanvas(true, true);
             }
             return;
         }
@@ -1676,7 +1702,7 @@ class Maya1TTSCanvas {
             this.selectionStart = null;
             this.selectionEnd = null;
             this.resetCursorBlink();
-            this.node.setDirtyCanvas(true, true);
+            this.setDirtyCanvas(true, true);
             return;
         }
 
@@ -1717,7 +1743,7 @@ class Maya1TTSCanvas {
                 this.editingValue = this.editingValue.slice(0, this.cursorPos) + "\n" + this.editingValue.slice(this.cursorPos);
                 this.cursorPos++;
                 this.resetCursorBlink();
-                this.node.setDirtyCanvas(true, true);
+                this.setDirtyCanvas(true, true);
             } else {
                 // For number fields, Enter saves
                 this.stopEditing(true);
@@ -1732,40 +1758,40 @@ class Maya1TTSCanvas {
                 this.editingValue = this.editingValue.slice(0, this.cursorPos - 1) + this.editingValue.slice(this.cursorPos);
                 this.cursorPos--;
                 this.resetCursorBlink();
-                this.node.setDirtyCanvas(true, true);
+                this.setDirtyCanvas(true, true);
             }
         } else if (e.key === "Delete") {
             if (this.cursorPos < this.editingValue.length) {
                 this.editingValue = this.editingValue.slice(0, this.cursorPos) + this.editingValue.slice(this.cursorPos + 1);
                 this.resetCursorBlink();
-                this.node.setDirtyCanvas(true, true);
+                this.setDirtyCanvas(true, true);
             }
         } else if (e.key === "ArrowLeft") {
             if (this.cursorPos > 0) {
                 this.cursorPos--;
                 this.resetCursorBlink();
-                this.node.setDirtyCanvas(true, true);
+                this.setDirtyCanvas(true, true);
             }
         } else if (e.key === "ArrowRight") {
             if (this.cursorPos < this.editingValue.length) {
                 this.cursorPos++;
                 this.resetCursorBlink();
-                this.node.setDirtyCanvas(true, true);
+                this.setDirtyCanvas(true, true);
             }
         } else if (e.key === "Home") {
             this.cursorPos = 0;
             this.resetCursorBlink();
-            this.node.setDirtyCanvas(true, true);
+            this.setDirtyCanvas(true, true);
         } else if (e.key === "End") {
             this.cursorPos = this.editingValue.length;
             this.resetCursorBlink();
-            this.node.setDirtyCanvas(true, true);
+            this.setDirtyCanvas(true, true);
         } else if (e.key.length === 1 && !isCtrl) {
             // Only handle printable characters (not Ctrl+C, etc.)
             this.editingValue = this.editingValue.slice(0, this.cursorPos) + e.key + this.editingValue.slice(this.cursorPos);
             this.cursorPos++;
             this.resetCursorBlink();
-            this.node.setDirtyCanvas(true, true);
+            this.setDirtyCanvas(true, true);
         }
     }
 
@@ -1785,7 +1811,7 @@ class Maya1TTSCanvas {
 
         if (this.hoverElement !== foundHover) {
             this.hoverElement = foundHover;
-            node.setDirtyCanvas(true, true);
+            self.setDirtyCanvas(true, true);
         }
     }
 
@@ -2033,7 +2059,7 @@ class Maya1TTSCanvas {
             this.selectionStart = this.dragStartPos;
             this.selectionEnd = cursorPos;
 
-            node.setDirtyCanvas(true, true);
+            self.setDirtyCanvas(true, true);
         }
 
         return true;
@@ -2051,13 +2077,28 @@ class Maya1TTSCanvas {
         e.stopPropagation();
         e.stopImmediatePropagation();
 
-        // Get canvas and convert coordinates
-        const canvas = app.canvas.canvas;
-        const rect = canvas.getBoundingClientRect();
+        try {
+            // Get canvas and convert coordinates
+            const canvas = app.canvas.canvas;
+            if (!canvas) return;
 
-        // Convert client to canvas coordinates accounting for zoom
-        const canvasX = (e.clientX - rect.left) / (rect.width / canvas.width);
-        const canvasY = (e.clientY - rect.top) / (rect.height / canvas.height);
+            const rect = canvas.getBoundingClientRect();
+
+            // FIX: Add safety checks to prevent NaN/Infinity from bad dimensions
+            if (!rect || rect.width === 0 || canvas.width === 0 || rect.height === 0 || canvas.height === 0) {
+                console.warn('Invalid canvas dimensions for wheel event');
+                return;
+            }
+
+            // Convert client to canvas coordinates accounting for zoom
+            const canvasX = (e.clientX - rect.left) / (rect.width / canvas.width);
+            const canvasY = (e.clientY - rect.top) / (rect.height / canvas.height);
+
+            // FIX: Validate coordinates are not NaN or Infinity
+            if (!isFinite(canvasX) || !isFinite(canvasY)) {
+                console.warn('Invalid canvas coordinates:', canvasX, canvasY);
+                return;
+            }
 
         // Get node position in canvas space
         const node = this.node;
@@ -2084,9 +2125,14 @@ class Maya1TTSCanvas {
 
                 this.scrollOffsets[this.editingField] = Math.max(0, Math.min(maxScroll, currentOffset + scrollAmount));
 
-                this.node.setDirtyCanvas(true, true);
+                this.setDirtyCanvas(true, true);
             }
 
+            return false;
+        }
+        } catch (err) {
+            // FIX: Catch coordinate calculation errors
+            console.error('Error in handleWheel:', err);
             return false;
         }
     }
