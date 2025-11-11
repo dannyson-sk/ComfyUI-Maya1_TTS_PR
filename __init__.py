@@ -19,7 +19,7 @@ import os
 from .nodes import NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS
 from .core.model_wrapper import Maya1ModelLoader
 
-__version__ = "1.0.0"
+__version__ = "1.0.6"
 
 # ComfyUI requires these exports
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]
