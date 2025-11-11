@@ -18,7 +18,7 @@ export const tooltips = {
     keep_model_in_vram: "Keep model loaded after generation:\n• ON: Faster repeated generations (uses 8-16GB VRAM)\n• OFF: Clears VRAM after each generation",
     temperature: "Controls randomness (0.1-2.0):\n• 0.4: Recommended, balanced\n• Lower (0.1-0.3): More consistent, robotic\n• Higher (0.5-1.0): More creative, varied",
     top_p: "Nucleus sampling (0.1-1.0):\n• 0.9: Recommended, natural speech\n• Lower: More focused, less variety\n• Higher: More diverse but less coherent",
-    max_tokens: "Maximum audio tokens to generate:\n• ~500 tokens ≈ 10 seconds\n• ~1000 tokens ≈ 20 seconds\n• ~2000 tokens ≈ 40 seconds",
+    max_new_tokens: "Maximum NEW audio tokens to generate (excludes input prompt):\n• ~500 tokens ≈ 10 seconds\n• ~1000 tokens ≈ 20 seconds\n• ~2000 tokens ≈ 40 seconds\n• 4000 tokens ≈ 30-40 seconds\n\nFor longform chunking: Each chunk respects this limit",
     repetition_penalty: "Prevents repetitive patterns:\n• 1.1: Recommended\n• Higher (1.2-1.5): Reduces loops but may affect quality\n• 1.0: No penalty (may loop)",
     seed: "Random seed for reproducibility:\n• 0: Random output each time\n• Fixed number (e.g., 42): Same output with same inputs",
     chunk_longform: "⚠️ EXPERIMENTAL: Auto-split long text:\n• ON: Splits text >80 words at sentences, combines audio\n• OFF: Generates entire text at once (may fail if too long)",
