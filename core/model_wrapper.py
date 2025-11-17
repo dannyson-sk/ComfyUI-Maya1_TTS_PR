@@ -5,13 +5,43 @@ Supports multiple attention mechanisms: SDPA, Flash Attention 2, Sage Attention.
 
 import torch
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import gc
+
+
+class GGUFTokenizerWrapper:
+    """
+    Wrapper to make llama-cpp-python's tokenizer compatible with transformers API.
+    """
+    def __init__(self, llama_model):
+        self.llama_model = llama_model
+        # Common token IDs for Maya1
+        self.bos_token = "<|begin_of_text|>"
+        self.eos_token = "<|end_of_text|>"
+        self.pad_token_id = 0
+
+    def encode(self, text: str) -> List[int]:
+        """Encode text to token IDs."""
+        return self.llama_model.tokenize(text.encode('utf-8'))
+
+    def decode(self, token_ids: List[int], skip_special_tokens: bool = False) -> str:
+        """Decode token IDs to text."""
+        if isinstance(token_ids, torch.Tensor):
+            token_ids = token_ids.tolist()
+        return self.llama_model.detokenize(token_ids).decode('utf-8', errors='ignore')
+
+    def __call__(self, text: str, return_tensors: str = None):
+        """Tokenize text (transformers-style)."""
+        token_ids = self.encode(text)
+        if return_tensors == "pt":
+            return {"input_ids": torch.tensor([token_ids])}
+        return {"input_ids": token_ids}
 
 
 class Maya1Model:
     """
     Wrapper class for Maya1 model with tokenizer and attention mechanism support.
+    Supports both SafeTensors (transformers) and GGUF (llama-cpp-python) formats.
     """
 
     def __init__(
@@ -21,7 +51,8 @@ class Maya1Model:
         model_name: str,
         attention_type: str,
         dtype: str,
-        device: str
+        device: str,
+        model_format: str = "safetensors"
     ):
         self.model = model
         self.tokenizer = tokenizer
@@ -29,12 +60,64 @@ class Maya1Model:
         self.attention_type = attention_type
         self.dtype = dtype
         self.device = device
+        self.model_format = model_format  # "safetensors" or "gguf"
 
     def __repr__(self):
         return (f"Maya1Model(name={self.model_name}, "
+                f"format={self.model_format}, "
                 f"attention={self.attention_type}, "
                 f"dtype={self.dtype}, "
                 f"device={self.device})")
+
+    def is_gguf(self) -> bool:
+        """Check if this is a GGUF model."""
+        return self.model_format == "gguf"
+
+    def generate(self, input_ids=None, prompt=None, **kwargs):
+        """
+        Generate tokens using the appropriate API for the model format.
+
+        Args:
+            input_ids: Token IDs (for SafeTensors models)
+            prompt: Text prompt (for GGUF models)
+            **kwargs: Generation parameters
+
+        Returns:
+            Generated token IDs (torch.Tensor)
+        """
+        if self.is_gguf():
+            # GGUF generation using llama-cpp-python
+            if prompt is None:
+                raise ValueError("GGUF models require a text prompt")
+
+            # Extract generation parameters
+            max_tokens = kwargs.get('max_new_tokens', 4000)
+            temperature = kwargs.get('temperature', 0.4)
+            top_p = kwargs.get('top_p', 0.9)
+            repetition_penalty = kwargs.get('repetition_penalty', 1.1)
+
+            # Generate using llama-cpp-python
+            output = self.model(
+                prompt,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                repeat_penalty=repetition_penalty,
+                echo=False  # Don't include prompt in output
+            )
+
+            # Extract generated tokens
+            # Note: llama-cpp-python returns a dict with 'choices'
+            generated_text = output['choices'][0]['text']
+
+            # Tokenize the output to get token IDs
+            generated_ids = self.tokenizer.encode(generated_text)
+
+            # Return as torch tensor matching transformers format
+            return torch.tensor([generated_ids])
+        else:
+            # SafeTensors generation using transformers
+            return self.model.generate(input_ids=input_ids, **kwargs)
 
 
 class Maya1ModelLoader:
@@ -46,9 +129,9 @@ class Maya1ModelLoader:
     _model_cache: Dict[str, Maya1Model] = {}
 
     @staticmethod
-    def _get_cache_key(model_path: str, attention_type: str, dtype: str) -> str:
+    def _get_cache_key(model_path: str, attention_type: str, dtype: str, model_format: str = "safetensors") -> str:
         """Generate a unique cache key for a model configuration."""
-        return f"{model_path}|{attention_type}|{dtype}"
+        return f"{model_path}|{model_format}|{attention_type}|{dtype}"
 
     @classmethod
     def load_model(
@@ -56,33 +139,39 @@ class Maya1ModelLoader:
         model_path: Path,
         attention_type: str = "sdpa",
         dtype: str = "bfloat16",
-        device: str = "cuda"
+        device: str = "cuda",
+        model_format: str = "safetensors"
     ) -> Maya1Model:
         """
         Load Maya1 model with specified configuration.
 
         Args:
-            model_path: Path to model directory
+            model_path: Path to model directory or GGUF file
             attention_type: Attention mechanism ("sdpa", "flash_attention_2", "sage_attention")
-            dtype: Data type ("bfloat16", "float16", "float32", "8bit", "4bit")
+            dtype: Data type ("bfloat16", "float16", "float32", "8bit", "4bit") for SafeTensors
+                   OR GGUF quant type for GGUF models
             device: Device to load on ("cuda", "cpu")
+            model_format: Model format ("safetensors" or "gguf")
 
         Returns:
             Maya1Model wrapper with model and tokenizer
         """
-        # Check if dtype OR attention changed from cached model
-        # If either changed, clear cache to reload with new settings
+        # Check if dtype OR attention OR format changed from cached model
+        # If any changed, clear cache to reload with new settings
         model_path_str = str(model_path)
         for cached_key, cached_model in list(cls._model_cache.items()):
             if model_path_str in cached_key:
                 dtype_changed = cached_model.dtype != dtype
                 attention_changed = cached_model.attention_type != attention_type
+                format_changed = cached_model.model_format != model_format
 
-                if dtype_changed or attention_changed:
+                if dtype_changed or attention_changed or format_changed:
                     if dtype_changed:
                         print(f"🔄 Dtype changed: {cached_model.dtype} → {dtype}")
                     if attention_changed:
                         print(f"🔄 Attention changed: {cached_model.attention_type} → {attention_type}")
+                    if format_changed:
+                        print(f"🔄 Format changed: {cached_model.model_format} → {model_format}")
 
                     print(f"🗑️  Clearing VRAM and reloading model with new settings...")
                     cls.clear_cache(force=True)
@@ -90,16 +179,63 @@ class Maya1ModelLoader:
                     break
 
         # Check cache
-        cache_key = cls._get_cache_key(str(model_path), attention_type, dtype)
+        cache_key = cls._get_cache_key(str(model_path), attention_type, dtype, model_format)
         if cache_key in cls._model_cache:
-            print(f"✅ Using cached Maya1 model: {model_path.name}")
+            model_display_name = model_path.name if hasattr(model_path, 'name') else str(model_path).split('/')[-1]
+            print(f"✅ Using cached Maya1 model: {model_display_name}")
             return cls._model_cache[cache_key]
 
-        print(f"📦 Loading Maya1 model: {model_path.name}")
+        model_display_name = model_path.name if hasattr(model_path, 'name') else str(model_path).split('/')[-1]
+        print(f"📦 Loading Maya1 model: {model_display_name}")
+        print(f"   Format: {model_format.upper()}")
         print(f"   Attention: {attention_type}")
         print(f"   Dtype: {dtype}")
         print(f"   Device: {device}")
 
+        # Branch based on model format
+        if model_format.lower() == "gguf":
+            # GGUF loading path using llama-cpp-python
+            maya1_model = cls._load_gguf_model(
+                model_path=model_path,
+                dtype=dtype,  # For GGUF, this is the quant type
+                device=device,
+                attention_type=attention_type
+            )
+        else:
+            # SafeTensors loading path using transformers (default)
+            maya1_model = cls._load_safetensors_model(
+                model_path=model_path,
+                dtype=dtype,
+                device=device,
+                attention_type=attention_type
+            )
+
+        # Cache the model
+        cls._model_cache[cache_key] = maya1_model
+
+        print(f"✅ Maya1 model loaded successfully!")
+        return maya1_model
+
+    @classmethod
+    def _load_safetensors_model(
+        cls,
+        model_path: Path,
+        dtype: str,
+        device: str,
+        attention_type: str
+    ) -> Maya1Model:
+        """
+        Load SafeTensors model using transformers library.
+
+        Args:
+            model_path: Path to model directory
+            dtype: Data type ("bfloat16", "float16", "float32", "8bit", "4bit")
+            device: Device to load on ("cuda", "cpu")
+            attention_type: Attention mechanism
+
+        Returns:
+            Maya1Model wrapper
+        """
         # Import required libraries
         try:
             from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -146,15 +282,104 @@ class Maya1ModelLoader:
             model_name=model_path.name,
             attention_type=attention_type,
             dtype=dtype,
-            device=device
+            device=device,
+            model_format="safetensors"
         )
 
-        # Cache the model
-        cls._model_cache[cache_key] = maya1_model
-
         # Verify actual settings applied
-        print(f"✅ Maya1 model loaded successfully!")
         cls._verify_model_config(model, attention_type, dtype)
+
+        return maya1_model
+
+    @classmethod
+    def _load_gguf_model(
+        cls,
+        model_path: Path,
+        dtype: str,
+        device: str,
+        attention_type: str
+    ) -> Maya1Model:
+        """
+        Load GGUF model using llama-cpp-python library.
+
+        Args:
+            model_path: Path to GGUF file
+            dtype: GGUF quantization type (ignored, determined by file)
+            device: Device to load on ("cuda", "cpu")
+            attention_type: Attention mechanism (limited support in llama.cpp)
+
+        Returns:
+            Maya1Model wrapper
+        """
+        try:
+            from llama_cpp import Llama
+        except ImportError:
+            raise ImportError(
+                "llama-cpp-python library not found. Install with:\n"
+                "pip install llama-cpp-python\n\n"
+                "For CUDA support:\n"
+                "pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu121"
+            )
+
+        # Convert Path to string
+        model_path_str = str(model_path)
+
+        # Configure GPU layers
+        if device == "cuda":
+            if not torch.cuda.is_available():
+                print("⚠️  CUDA requested but not available, using CPU")
+                n_gpu_layers = 0
+            else:
+                n_gpu_layers = -1  # Use all layers on GPU
+                print(f"🔧 Loading GGUF with GPU acceleration (all layers)")
+        else:
+            n_gpu_layers = 0
+            print(f"🔧 Loading GGUF on CPU")
+
+        # Attention implementation note
+        if attention_type not in ["sdpa", "eager"]:
+            print(f"⚠️  llama.cpp doesn't support {attention_type}, using default attention")
+
+        # Load GGUF model
+        print(f"📦 Loading GGUF model with llama-cpp-python...")
+
+        try:
+            model = Llama(
+                model_path=model_path_str,
+                n_gpu_layers=n_gpu_layers,
+                n_ctx=4096,  # Context window
+                verbose=False
+            )
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to load GGUF model:\n{str(e)}\n\n"
+                f"Make sure:\n"
+                f"1. The file is a valid GGUF model\n"
+                f"2. The model is compatible with llama.cpp\n"
+                f"3. You have enough VRAM/RAM"
+            )
+
+        # For GGUF, llama-cpp-python handles tokenization internally
+        # We'll create a tokenizer wrapper for compatibility with existing code
+        tokenizer = GGUFTokenizerWrapper(model)
+
+        # Extract model name from path
+        model_name = model_path.name if hasattr(model_path, 'name') else str(model_path).split('/')[-1]
+
+        # Create wrapper
+        maya1_model = Maya1Model(
+            model=model,
+            tokenizer=tokenizer,
+            model_name=model_name,
+            attention_type=attention_type if attention_type in ["sdpa", "eager"] else "default",
+            dtype=dtype,  # GGUF quant type from filename
+            device=device,
+            model_format="gguf"
+        )
+
+        print(f"✅ GGUF model loaded: {model_name}")
+        if device == "cuda" and n_gpu_layers == -1:
+            print(f"   GPU: All layers offloaded to VRAM")
 
         return maya1_model
 

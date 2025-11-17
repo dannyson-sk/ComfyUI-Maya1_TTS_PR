@@ -105,6 +105,70 @@ pip install bitsandbytes flash-attn sageattention
 </details>
 
 <details>
+<summary><b>GGUF Model Support (Click to expand)</b></summary>
+
+### What is GGUF?
+
+GGUF is a quantized model format that provides significantly lower VRAM usage compared to SafeTensors models. Perfect for users with limited GPU memory!
+
+### Installation
+
+```bash
+# For CPU-only
+pip install llama-cpp-python
+
+# For CUDA GPU acceleration (recommended)
+pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu121
+```
+
+Replace `cu121` with your CUDA version (cu118, cu121, cu122, cu123, cu124, etc.).
+
+### Downloading GGUF Models
+
+You can download quantized GGUF models from:
+
+**Weighted/imatrix quants:**
+- https://huggingface.co/mradermacher/maya1-i1-GGUF
+
+**Static quants:**
+- https://huggingface.co/mradermacher/maya1-GGUF
+
+### Recommended Quants
+
+| Quant Type | Size | VRAM Usage | Quality | Notes |
+|------------|------|------------|---------|-------|
+| **Q4_K_M** | ~2.2GB | ~2-3GB | Good | Best balance of size/quality |
+| **Q5_K_M** | ~2.5GB | ~3-4GB | Better | Higher quality, still efficient |
+| **Q6_K** | ~2.8GB | ~3-4GB | Excellent | Near-original quality |
+| **IQ4_XS** | ~2.0GB | ~2-3GB | Good | Smallest with good quality |
+
+### Setup
+
+1. Download a GGUF model file (e.g., `maya1.Q4_K_M.gguf`)
+2. Place it in `ComfyUI/models/maya1-TTS/`
+3. Restart ComfyUI
+4. In the node:
+   - Select the GGUF file from the **model_name** dropdown
+   - Set **model_format** to `GGUF`
+   - The **dtype** setting is ignored for GGUF (quantization is in the file)
+
+### GGUF vs SafeTensors
+
+| Feature | SafeTensors + BitsAndBytes | GGUF |
+|---------|---------------------------|------|
+| **VRAM (4-bit)** | ~6GB | ~2-3GB |
+| **Installation** | Easy (pip install) | Moderate (platform-specific) |
+| **Speed** | Fast (GPU optimized) | Fast (llama.cpp) |
+| **Attention** | All types supported | Limited support |
+| **Compatibility** | Windows/Linux/Mac | Windows/Linux/Mac |
+
+**Recommendation:**
+- Use **SafeTensors** with 4-bit/8-bit for easiest setup and full features
+- Use **GGUF** if you need absolute minimum VRAM usage (<6GB available)
+
+</details>
+
+<details>
 <summary><b>Download Maya1 Model (Click to expand)</b></summary>
 
 ### Model Location
@@ -262,6 +326,11 @@ The node features a completely custom-built interface with:
 **model_name** (dropdown)
 - Select from models in `ComfyUI/models/maya1-TTS/`
 - Model auto-discovered on startup
+- Supports both SafeTensors folders and GGUF files
+
+**model_format** (dropdown)
+- `SafeTensors`: Standard HuggingFace format (default)
+- `GGUF`: Quantized format for lower VRAM usage
 
 **dtype** (dropdown)
 - `4bit`: NF4 quantization (~6GB VRAM, requires bitsandbytes, **SLOWER**)

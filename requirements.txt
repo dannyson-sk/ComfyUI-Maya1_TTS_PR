@@ -9,6 +9,12 @@ snac>=1.0.0
 # Audio processing
 soundfile>=0.12.0
 
+# Optional: Quantization and model format support
+# bitsandbytes>=0.41.0       # 4-bit/8-bit quantization for SafeTensors models
+# llama-cpp-python>=0.2.0    # GGUF model support (for quantized models)
+#                            # For CUDA support, install with:
+#                            # pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu121
+
 # Optional: Accelerated attention mechanisms (uncomment to enable)
 # flash-attn>=2.5.0          # Flash Attention 2 (fastest, CUDA only)
 # sageattention>=1.0.0       # Sage Attention (memory efficient)

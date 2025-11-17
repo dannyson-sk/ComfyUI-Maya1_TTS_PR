@@ -177,9 +177,13 @@ class Maya1TTSBarebonesNode:
                     "default": discover_maya1_models()[0] if discover_maya1_models() else None,
                     "tooltip": "Select Maya1 model from ComfyUI/models/maya1-TTS/ folder. Models are auto-discovered on startup. Download from: huggingface.co/maya-research/maya1"
                 }),
+                "model_format": (["SafeTensors", "GGUF"], {
+                    "default": "SafeTensors",
+                    "tooltip": "SafeTensors: Standard HuggingFace format with BitsAndBytes quantization. GGUF: Quantized format using llama-cpp-python (lower VRAM usage)"
+                }),
                 "dtype": (["4bit (BNB)", "8bit (BNB)", "float16", "bfloat16", "float32"], {
                     "default": "bfloat16",
-                    "tooltip": "Model precision. 4bit/8bit save VRAM but are SLOWER. Use float16/bfloat16 if you have 10GB+ VRAM for best speed. 4bit≈6GB, 8bit≈7GB, float16/bfloat16≈8-9GB, float32≈16GB"
+                    "tooltip": "For SafeTensors: precision/quantization type. For GGUF: ignored (set by GGUF file). 4bit/8bit save VRAM but are SLOWER. Use float16/bfloat16 if you have 10GB+ VRAM for best speed. 4bit≈6GB, 8bit≈7GB, float16/bfloat16≈8-9GB, float32≈16GB"
                 }),
                 "attention_mechanism": (["sdpa", "eager", "flash_attention_2", "sage_attention"], {
                     "default": "sdpa",
@@ -272,6 +276,7 @@ class Maya1TTSBarebonesNode:
         voice_description: str,
         text: str,
         model_name: str,
+        model_format: str,
         dtype: str,
         attention_mechanism: str,
         device: str,
@@ -376,13 +381,17 @@ class Maya1TTSBarebonesNode:
         # Strip "(BNB)" suffix from dtype labels if present
         dtype_clean = dtype.replace(" (BNB)", "")
 
+        # Convert model_format to lowercase for consistency
+        model_format_lower = model_format.lower()
+
         # Load model using the wrapper (with caching)
         try:
             maya1_model = Maya1ModelLoader.load_model(
                 model_path=model_path,
                 attention_type=attention_mechanism,
                 dtype=dtype_clean,
-                device=device
+                device=device,
+                model_format=model_format_lower
             )
         except Exception as e:
             raise RuntimeError(
@@ -639,19 +648,31 @@ class Maya1TTSBarebonesNode:
             generation_start = time.time()
 
             with torch.inference_mode():
-                outputs = maya1_model.model.generate(
-                    **inputs,
-                    max_new_tokens=max_new_tokens,
-                    min_new_tokens=28,  # At least 4 SNAC frames (4 frames × 7 tokens = 28)
-                    temperature=temperature,
-                    top_p=top_p,
-                    do_sample=True,
-                    repetition_penalty=repetition_penalty,
-                    pad_token_id=maya1_model.tokenizer.pad_token_id,
-                    eos_token_id=128258,  # CODE_END_TOKEN_ID - Stop at end of speech
-                    stopping_criteria=stopping_criteria,
-                    use_cache=True,  # Enable KV cache for faster generation
-                )
+                # Use unified generate method that works for both SafeTensors and GGUF
+                if maya1_model.is_gguf():
+                    # For GGUF, pass the prompt string directly
+                    outputs = maya1_model.generate(
+                        prompt=prompt,
+                        max_new_tokens=max_new_tokens,
+                        temperature=temperature,
+                        top_p=top_p,
+                        repetition_penalty=repetition_penalty,
+                    )
+                else:
+                    # For SafeTensors, use the standard transformers API
+                    outputs = maya1_model.generate(
+                        input_ids=inputs['input_ids'],
+                        max_new_tokens=max_new_tokens,
+                        min_new_tokens=28,  # At least 4 SNAC frames (4 frames × 7 tokens = 28)
+                        temperature=temperature,
+                        top_p=top_p,
+                        do_sample=True,
+                        repetition_penalty=repetition_penalty,
+                        pad_token_id=maya1_model.tokenizer.pad_token_id,
+                        eos_token_id=128258,  # CODE_END_TOKEN_ID - Stop at end of speech
+                        stopping_criteria=stopping_criteria,
+                        use_cache=True,  # Enable KV cache for faster generation
+                    )
 
             generation_time = time.time() - generation_start
 
