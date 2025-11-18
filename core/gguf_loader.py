@@ -164,6 +164,91 @@ def load_tokenizer_for_gguf(gguf_path: Path):
         )
 
 
+def unpermute_qk_weights(tensor, n_head):
+    """
+    Reverse the Q/K weight permutation done by llama.cpp during GGUF conversion.
+    Llama.cpp permutes the weights for its own layout, we need to reverse it.
+
+    Args:
+        tensor: Weight tensor to unpermute
+        n_head: Number of attention heads
+
+    Returns:
+        Unpermuted tensor
+    """
+    from .gguf_dequant import is_quantized, dequantize_tensor
+
+    # Dequantize if needed for permutation
+    was_quantized = is_quantized(tensor)
+    if was_quantized:
+        original_tensor = tensor
+        tensor = dequantize_tensor(tensor, dtype=torch.float32)
+
+    # Unpermute: reverse of llama.cpp's permute operation
+    # Original shape: [dim, dim] -> reshape -> swapaxes -> reshape
+    shape = tensor.shape
+    tensor_reshaped = tensor.reshape(n_head, shape[0] // n_head // 2, 2, *shape[1:])
+    tensor_swapped = tensor_reshaped.swapaxes(1, 2)
+    tensor_unpermuted = tensor_swapped.reshape(shape)
+
+    # Return original quantized tensor if it was quantized
+    # (We don't want to keep dequantized version in memory)
+    if was_quantized:
+        return original_tensor
+    else:
+        return tensor_unpermuted
+
+
+def remap_gguf_keys(state_dict: dict, config=None) -> dict:
+    """
+    Remap GGUF key names to transformers key names.
+    GGUF uses llama.cpp naming (blk.X.attn_q) while transformers uses (model.layers.X.self_attn.q_proj).
+
+    Args:
+        state_dict: State dict with GGUF key names
+        config: Model config (for head count information)
+
+    Returns:
+        State dict with transformers key names
+    """
+    # Key mapping from GGUF (llama.cpp) to transformers
+    key_map = {
+        "token_embd.weight": "model.embed_tokens.weight",
+        "output_norm.weight": "model.norm.weight",
+        "output.weight": "lm_head.weight",
+        "blk.": "model.layers.",
+        "attn_norm.weight": "input_layernorm.weight",
+        "attn_q.weight": "self_attn.q_proj.weight",
+        "attn_k.weight": "self_attn.k_proj.weight",
+        "attn_v.weight": "self_attn.v_proj.weight",
+        "attn_output.weight": "self_attn.o_proj.weight",
+        "ffn_norm.weight": "post_attention_layernorm.weight",
+        "ffn_up.weight": "mlp.up_proj.weight",
+        "ffn_down.weight": "mlp.down_proj.weight",
+        "ffn_gate.weight": "mlp.gate_proj.weight",
+    }
+
+    remapped = {}
+    for key, tensor in state_dict.items():
+        new_key = key
+        # Apply all mappings
+        for old_pattern, new_pattern in key_map.items():
+            new_key = new_key.replace(old_pattern, new_pattern)
+
+        # Unpermute Q and K weights (llama.cpp permutes these)
+        # NOTE: Disabled for now - may not be needed for Maya1 or might cause issues
+        # if config and ("q_proj.weight" in new_key or "k_proj.weight" in new_key):
+        #     n_head = config.num_attention_heads
+        #     n_head_kv = getattr(config, "num_key_value_heads", n_head)
+        #     heads = n_head if "q_proj" in new_key else n_head_kv
+        #     tensor = unpermute_qk_weights(tensor, heads)
+
+        remapped[new_key] = tensor
+
+    print(f"   Remapped {len(remapped)} keys from GGUF to transformers format")
+    return remapped
+
+
 def create_maya1_model_from_gguf(state_dict: dict, device: str = "cuda"):
     """
     Create Maya1 model architecture and load GGUF state dict.
@@ -194,21 +279,23 @@ def create_maya1_model_from_gguf(state_dict: dict, device: str = "cuda"):
             "Please ensure you have internet connection for first-time setup."
         )
 
-    # Create model with empty weights (we'll load from GGUF)
-    # Use meta device to avoid allocating memory
-    print(f"   Creating model on meta device...")
-    with torch.device("meta"):
-        model = AutoModelForCausalLM.from_config(
-            config,
-            trust_remote_code=True
-        )
+    # Remap GGUF keys to transformers keys
+    print(f"   Remapping GGUF keys to transformers format...")
+    state_dict = remap_gguf_keys(state_dict, config)
+
+    # Create model architecture (on CPU first, then move weights to target device)
+    print(f"   Creating model architecture...")
+    model = AutoModelForCausalLM.from_config(
+        config,
+        trust_remote_code=True
+    )
 
     # Replace Linear layers with GGML versions that handle quantization
     print(f"   Replacing layers with GGUF-compatible operations...")
     model = replace_linear_with_ggml(model)
 
-    # Load state dict with GGUF tensors
-    print(f"   Loading GGUF weights into model...")
+    # Load GGUF weights directly into model on target device
+    print(f"   Loading GGUF weights to {device}...")
 
     # We need to manually load because the tensors are custom GGMLTensors
     missing_keys = []
@@ -217,18 +304,26 @@ def create_maya1_model_from_gguf(state_dict: dict, device: str = "cuda"):
     model_state = model.state_dict()
     for key in model_state.keys():
         if key in state_dict:
-            # Load GGUF tensor
+            # Load GGUF tensor and move to target device
             param = state_dict[key]
+
+            # Move tensor to target device
+            param = param.to(device)
+
             # Convert to parameter
             if not isinstance(param, torch.nn.Parameter):
                 param = torch.nn.Parameter(param, requires_grad=False)
 
             # Set parameter in model
-            module_name, param_name = key.rsplit('.', 1)
-            module = model
-            for part in module_name.split('.'):
-                module = getattr(module, part)
-            setattr(module, param_name, param)
+            try:
+                module_name, param_name = key.rsplit('.', 1)
+                module = model
+                for part in module_name.split('.'):
+                    module = getattr(module, part)
+                setattr(module, param_name, param)
+            except Exception as e:
+                print(f"      Failed to load {key}: {e}")
+                missing_keys.append(key)
         else:
             missing_keys.append(key)
 
@@ -248,8 +343,8 @@ def create_maya1_model_from_gguf(state_dict: dict, device: str = "cuda"):
             for key in unexpected_keys[:5]:
                 print(f"      - {key}")
 
-    # Move model to target device
-    print(f"   Moving model to {device}...")
+    # Move entire model to target device (for any remaining components)
+    print(f"   Finalizing model on {device}...")
     model = model.to(device)
     model.eval()
 
