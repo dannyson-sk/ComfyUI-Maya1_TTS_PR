@@ -302,58 +302,33 @@ def create_maya1_model_from_gguf(state_dict: dict, device: str = "cuda"):
         trust_remote_code=True
     )
 
-    # Replace Linear layers with GGML versions that handle quantization
+    # Replace Linear/LayerNorm/RMSNorm layers with GGML versions that handle quantization
     print(f"   Replacing layers with GGUF-compatible operations...")
     model = replace_linear_with_ggml(model)
 
-    # Load GGUF weights directly into model on target device
+    # Load GGUF weights using PyTorch's built-in load_state_dict
     print(f"   Loading GGUF weights to {device}...")
 
-    # We need to manually load because the tensors are custom GGMLTensors
-    missing_keys = []
-    unexpected_keys = []
+    # Move tensors to target device
+    state_dict_on_device = {}
+    for key, tensor in state_dict.items():
+        state_dict_on_device[key] = tensor.to(device)
 
-    model_state = model.state_dict()
-    for key in model_state.keys():
-        if key in state_dict:
-            # Load GGUF tensor and move to target device
-            param = state_dict[key]
+    # Use PyTorch's load_state_dict with our custom _load_from_state_dict overrides
+    incompatible_keys = model.load_state_dict(state_dict_on_device, strict=False)
 
-            # Move tensor to target device
-            param = param.to(device)
-
-            # Convert to parameter
-            if not isinstance(param, torch.nn.Parameter):
-                param = torch.nn.Parameter(param, requires_grad=False)
-
-            # Set parameter in model
-            try:
-                module_name, param_name = key.rsplit('.', 1)
-                module = model
-                for part in module_name.split('.'):
-                    module = getattr(module, part)
-                setattr(module, param_name, param)
-            except Exception as e:
-                print(f"      Failed to load {key}: {e}")
-                missing_keys.append(key)
-        else:
-            missing_keys.append(key)
-
-    for key in state_dict.keys():
-        if key not in model_state:
-            unexpected_keys.append(key)
+    missing_keys = incompatible_keys.missing_keys
+    unexpected_keys = incompatible_keys.unexpected_keys
 
     if missing_keys:
         print(f"   ⚠️  Missing keys: {len(missing_keys)}")
-        if len(missing_keys) <= 5:
-            for key in missing_keys[:5]:
-                print(f"      - {key}")
+        for key in missing_keys[:10]:
+            print(f"      - {key}")
 
     if unexpected_keys:
         print(f"   ⚠️  Unexpected keys: {len(unexpected_keys)}")
-        if len(unexpected_keys) <= 5:
-            for key in unexpected_keys[:5]:
-                print(f"      - {key}")
+        for key in unexpected_keys[:10]:
+            print(f"      - {key}")
 
     # Move entire model to target device (for any remaining components)
     print(f"   Finalizing model on {device}...")

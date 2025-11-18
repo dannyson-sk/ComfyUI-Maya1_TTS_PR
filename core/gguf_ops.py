@@ -61,6 +61,21 @@ class GGMLLinear(nn.Linear):
         self.weight = None
         self.bias = None
 
+    def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs):
+        """Override to handle GGML tensors during state dict loading."""
+        weight_key = f"{prefix}weight"
+        bias_key = f"{prefix}bias"
+
+        if weight_key in state_dict:
+            self.weight = nn.Parameter(state_dict[weight_key], requires_grad=False)
+        else:
+            missing_keys.append(weight_key)
+
+        if bias_key in state_dict:
+            self.bias = nn.Parameter(state_dict[bias_key], requires_grad=False)
+        elif self.bias is not None:
+            missing_keys.append(bias_key)
+
     def forward(self, input):
         """
         Forward pass with automatic dequantization.
@@ -136,6 +151,15 @@ class GGMLEmbedding(nn.Embedding):
     Embedding layer that dequantizes GGUF weights on-the-fly.
     """
 
+    def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs):
+        """Override to handle GGML tensors during state dict loading."""
+        weight_key = f"{prefix}weight"
+
+        if weight_key in state_dict:
+            self.weight = nn.Parameter(state_dict[weight_key], requires_grad=False)
+        else:
+            missing_keys.append(weight_key)
+
     def forward(self, input):
         """Forward pass with automatic dequantization."""
         if is_quantized(self.weight):
@@ -155,16 +179,48 @@ class GGMLLayerNorm(nn.LayerNorm):
     LayerNorm that handles quantized weights.
     """
 
+    def __init__(self, normalized_shape, eps=1e-5, elementwise_affine=True, device=None, dtype=None):
+        # Don't allocate weights yet
+        nn.Module.__init__(self)
+        if isinstance(normalized_shape, int):
+            normalized_shape = (normalized_shape,)
+        self.normalized_shape = tuple(normalized_shape)
+        self.eps = eps
+        self.elementwise_affine = elementwise_affine
+        if self.elementwise_affine:
+            self.weight = None
+            self.bias = None
+        else:
+            self.register_parameter('weight', None)
+            self.register_parameter('bias', None)
+
+    def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs):
+        """Override to handle GGML tensors during state dict loading."""
+        weight_key = f"{prefix}weight"
+        bias_key = f"{prefix}bias"
+
+        if weight_key in state_dict:
+            self.weight = nn.Parameter(state_dict[weight_key], requires_grad=False)
+        elif self.elementwise_affine:
+            missing_keys.append(weight_key)
+
+        if bias_key in state_dict:
+            self.bias = nn.Parameter(state_dict[bias_key], requires_grad=False)
+
     def forward(self, input):
         """Forward pass with automatic dequantization."""
         if self.weight is None:
-            return super().forward(input)
+            return torch.nn.functional.layer_norm(
+                input, self.normalized_shape, None, None, self.eps
+            )
 
         if is_quantized(self.weight):
             weight = dequantize_tensor(self.weight, dtype=input.dtype)
             weight = weight.to(input.device)
         else:
             weight = self.weight
+            if weight is not None:
+                weight = weight.to(input.device)
 
         bias = None
         if self.bias is not None:
@@ -172,11 +228,48 @@ class GGMLLayerNorm(nn.LayerNorm):
                 bias = dequantize_tensor(self.bias, dtype=input.dtype)
                 bias = bias.to(input.device)
             else:
-                bias = self.bias
+                bias = self.bias.to(input.device)
 
         return torch.nn.functional.layer_norm(
             input, self.normalized_shape, weight, bias, self.eps
         )
+
+
+class GGMLRMSNorm(nn.Module):
+    """
+    RMSNorm that handles quantized weights.
+    Compatible with transformers LlamaRMSNorm.
+    """
+
+    def __init__(self, hidden_size, eps=1e-6):
+        nn.Module.__init__(self)
+        self.weight = None
+        self.variance_epsilon = eps
+
+    def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs):
+        """Override to handle GGML tensors during state dict loading."""
+        weight_key = f"{prefix}weight"
+
+        if weight_key in state_dict:
+            self.weight = nn.Parameter(state_dict[weight_key], requires_grad=False)
+        else:
+            missing_keys.append(weight_key)
+
+    def forward(self, hidden_states):
+        """Forward pass with automatic dequantization."""
+        input_dtype = hidden_states.dtype
+        hidden_states = hidden_states.to(torch.float32)
+        variance = hidden_states.pow(2).mean(-1, keepdim=True)
+        hidden_states = hidden_states * torch.rsqrt(variance + self.variance_epsilon)
+
+        # Get weight
+        if is_quantized(self.weight):
+            weight = dequantize_tensor(self.weight, dtype=input_dtype)
+            weight = weight.to(hidden_states.device)
+        else:
+            weight = self.weight
+
+        return weight * hidden_states.to(input_dtype)
 
 
 class GGMLOps:
@@ -188,11 +281,12 @@ class GGMLOps:
     Conv1d = GGMLConv1d
     Embedding = GGMLEmbedding
     LayerNorm = GGMLLayerNorm
+    RMSNorm = GGMLRMSNorm
 
 
 def replace_linear_with_ggml(module):
     """
-    Recursively replace nn.Linear layers with GGMLLinear.
+    Recursively replace nn.Linear, nn.Embedding, nn.LayerNorm, and RMSNorm layers with GGML versions.
 
     Args:
         module: PyTorch module to modify
@@ -214,6 +308,44 @@ def replace_linear_with_ggml(module):
             if child.bias is not None:
                 ggml_linear.bias = child.bias
             setattr(module, name, ggml_linear)
+        elif isinstance(child, nn.Embedding):
+            # Replace with GGML version
+            ggml_embedding = GGMLEmbedding(
+                child.num_embeddings,
+                child.embedding_dim,
+                padding_idx=child.padding_idx,
+                max_norm=child.max_norm,
+                norm_type=child.norm_type,
+                scale_grad_by_freq=child.scale_grad_by_freq,
+                sparse=child.sparse
+            )
+            # Copy weights if they exist
+            if child.weight is not None:
+                ggml_embedding.weight = child.weight
+            setattr(module, name, ggml_embedding)
+        elif isinstance(child, nn.LayerNorm):
+            # Replace with GGML version
+            ggml_layernorm = GGMLLayerNorm(
+                child.normalized_shape,
+                eps=child.eps,
+                elementwise_affine=child.elementwise_affine
+            )
+            # Copy weights if they exist
+            if hasattr(child, 'weight') and child.weight is not None:
+                ggml_layernorm.weight = child.weight
+            if hasattr(child, 'bias') and child.bias is not None:
+                ggml_layernorm.bias = child.bias
+            setattr(module, name, ggml_layernorm)
+        elif child.__class__.__name__ == 'LlamaRMSNorm':
+            # Replace transformers' LlamaRMSNorm with GGML version
+            ggml_rmsnorm = GGMLRMSNorm(
+                hidden_size=child.weight.shape[0] if child.weight is not None else 4096,
+                eps=getattr(child, 'variance_epsilon', 1e-6)
+            )
+            # Copy weights if they exist
+            if hasattr(child, 'weight') and child.weight is not None:
+                ggml_rmsnorm.weight = child.weight
+            setattr(module, name, ggml_rmsnorm)
         else:
             # Recursively process children
             replace_linear_with_ggml(child)
