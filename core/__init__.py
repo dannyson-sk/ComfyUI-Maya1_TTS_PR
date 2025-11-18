@@ -20,6 +20,11 @@ from .utils import (
     crossfade_audio
 )
 
+# GGUF support
+from .gguf_loader import load_gguf_maya1, Maya1GGUFModel
+from .gguf_ops import GGMLTensor, GGMLOps
+from .gguf_dequant import is_quantized, dequantize_tensor
+
 __all__ = [
     "Maya1Model",
     "Maya1ModelLoader",
@@ -35,4 +40,11 @@ __all__ = [
     "check_interruption",
     "ProgressCallback",
     "crossfade_audio",
+    # GGUF
+    "load_gguf_maya1",
+    "Maya1GGUFModel",
+    "GGMLTensor",
+    "GGMLOps",
+    "is_quantized",
+    "dequantize_tensor",
 ]

@@ -1,0 +1,308 @@
+"""
+GGUF model loader for Maya1 TTS.
+Loads quantized GGUF models and creates Maya1-compatible model wrappers.
+"""
+
+import gguf
+import torch
+import warnings
+from pathlib import Path
+from typing import Optional
+from .gguf_ops import GGMLTensor, replace_linear_with_ggml
+
+
+class Maya1GGUFModel:
+    """
+    Wrapper class for Maya1 GGUF model with tokenizer.
+    Compatible with the regular Maya1Model interface.
+    """
+
+    def __init__(
+        self,
+        model,
+        tokenizer,
+        model_name: str,
+        quantization_type: str,
+        device: str
+    ):
+        self.model = model
+        self.tokenizer = tokenizer
+        self.model_name = model_name
+        self.quantization_type = quantization_type
+        self.device = device
+
+    def __repr__(self):
+        return (f"Maya1GGUFModel(name={self.model_name}, "
+                f"quant={self.quantization_type}, "
+                f"device={self.device})")
+
+
+def load_gguf_state_dict(gguf_path: Path) -> tuple:
+    """
+    Load GGUF file and extract state dict with quantized tensors.
+
+    Args:
+        gguf_path: Path to .gguf file
+
+    Returns:
+        Tuple of (state_dict, quantization_info)
+    """
+    print(f"📦 Loading GGUF file: {gguf_path.name}")
+
+    reader = gguf.GGUFReader(str(gguf_path))
+
+    state_dict = {}
+    qtype_counts = {}
+
+    # Convert GGUF tensors to PyTorch state dict
+    for tensor in reader.tensors:
+        tensor_name = tensor.name
+
+        # Convert numpy array to torch tensor (memory-mapped)
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="The given NumPy array is not writable")
+            torch_tensor = torch.from_numpy(tensor.data)
+
+        # Get original shape (GGUF stores shapes in reverse)
+        shape = torch.Size(tuple(int(v) for v in reversed(tensor.shape)))
+
+        # Wrap in GGMLTensor to track quantization info
+        if tensor.tensor_type in {gguf.GGMLQuantizationType.F32, gguf.GGMLQuantizationType.F16}:
+            # Not quantized, just reshape
+            torch_tensor = torch_tensor.view(*shape)
+            state_dict[tensor_name] = torch_tensor
+        else:
+            # Quantized - wrap with metadata
+            state_dict[tensor_name] = GGMLTensor(
+                torch_tensor,
+                tensor_type=tensor.tensor_type,
+                tensor_shape=shape
+            )
+
+        # Track quantization types
+        qtype_name = getattr(tensor.tensor_type, "name", str(tensor.tensor_type))
+        qtype_counts[qtype_name] = qtype_counts.get(qtype_name, 0) + 1
+
+    print(f"   Loaded {len(state_dict)} tensors")
+    print(f"   Quantization types: {', '.join(f'{k} ({v})' for k, v in qtype_counts.items())}")
+
+    # Detect primary quantization type
+    if qtype_counts:
+        primary_qtype = max(qtype_counts.keys(), key=lambda k: qtype_counts[k])
+    else:
+        primary_qtype = "F16"
+
+    return state_dict, primary_qtype
+
+
+def load_tokenizer_for_gguf(gguf_path: Path):
+    """
+    Load tokenizer for GGUF model.
+
+    Tries multiple approaches:
+    1. Load from same directory as GGUF (if tokenizer/ folder exists)
+    2. Load from default Maya1 tokenizer in models directory
+    3. Use hardcoded tokenizer path
+
+    Args:
+        gguf_path: Path to .gguf file
+
+    Returns:
+        Loaded tokenizer
+    """
+    from transformers import AutoTokenizer
+
+    # Try 1: Look for tokenizer in same directory as GGUF
+    gguf_dir = gguf_path.parent
+    if (gguf_dir / "tokenizer").exists():
+        print(f"   Loading tokenizer from: {gguf_dir / 'tokenizer'}")
+        tokenizer = AutoTokenizer.from_pretrained(
+            str(gguf_dir),
+            subfolder="tokenizer",
+            trust_remote_code=True
+        )
+        return tokenizer
+
+    # Try 2: Look for maya1 model directory with tokenizer
+    # Navigate up to find models/maya1-TTS/maya1/tokenizer
+    try:
+        from .utils import get_maya1_models_dir
+        models_dir = get_maya1_models_dir()
+
+        # Check common model directories
+        for model_dir in ["maya1", "Maya1", "maya-research-maya1"]:
+            tokenizer_path = models_dir / model_dir
+            if (tokenizer_path / "tokenizer").exists():
+                print(f"   Loading tokenizer from: {tokenizer_path / 'tokenizer'}")
+                tokenizer = AutoTokenizer.from_pretrained(
+                    str(tokenizer_path),
+                    subfolder="tokenizer",
+                    trust_remote_code=True
+                )
+                return tokenizer
+    except Exception as e:
+        print(f"   ⚠️  Could not auto-detect tokenizer: {e}")
+
+    # Try 3: Fallback - download from HuggingFace
+    print(f"   ⚠️  Tokenizer not found locally, downloading from HuggingFace...")
+    print(f"   This may take a moment on first run.")
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(
+            "maya-research/maya1",
+            subfolder="tokenizer",
+            trust_remote_code=True
+        )
+        return tokenizer
+    except Exception as e:
+        raise RuntimeError(
+            f"Failed to load tokenizer!\n\n"
+            f"Please ensure you have either:\n"
+            f"1. A 'tokenizer/' folder next to your GGUF file, OR\n"
+            f"2. A Maya1 model in {models_dir}, OR\n"
+            f"3. Internet connection to download from HuggingFace\n\n"
+            f"Error: {e}"
+        )
+
+
+def create_maya1_model_from_gguf(state_dict: dict, device: str = "cuda"):
+    """
+    Create Maya1 model architecture and load GGUF state dict.
+
+    Args:
+        state_dict: State dict with GGUF tensors
+        device: Device to load on
+
+    Returns:
+        Maya1 model with GGUF weights
+    """
+    from transformers import AutoConfig, AutoModelForCausalLM
+
+    print(f"🔧 Creating Maya1 model architecture...")
+
+    # Create model config
+    # We need to infer the config from the state dict or use a default
+    try:
+        # Try to create config from known Maya1 architecture
+        config = AutoConfig.from_pretrained(
+            "maya-research/maya1",
+            trust_remote_code=True
+        )
+    except Exception as e:
+        print(f"   ⚠️  Could not load config from HuggingFace: {e}")
+        raise RuntimeError(
+            "Failed to load Maya1 config.\n"
+            "Please ensure you have internet connection for first-time setup."
+        )
+
+    # Create model with empty weights (we'll load from GGUF)
+    # Use meta device to avoid allocating memory
+    print(f"   Creating model on meta device...")
+    with torch.device("meta"):
+        model = AutoModelForCausalLM.from_config(
+            config,
+            trust_remote_code=True
+        )
+
+    # Replace Linear layers with GGML versions that handle quantization
+    print(f"   Replacing layers with GGUF-compatible operations...")
+    model = replace_linear_with_ggml(model)
+
+    # Load state dict with GGUF tensors
+    print(f"   Loading GGUF weights into model...")
+
+    # We need to manually load because the tensors are custom GGMLTensors
+    missing_keys = []
+    unexpected_keys = []
+
+    model_state = model.state_dict()
+    for key in model_state.keys():
+        if key in state_dict:
+            # Load GGUF tensor
+            param = state_dict[key]
+            # Convert to parameter
+            if not isinstance(param, torch.nn.Parameter):
+                param = torch.nn.Parameter(param, requires_grad=False)
+
+            # Set parameter in model
+            module_name, param_name = key.rsplit('.', 1)
+            module = model
+            for part in module_name.split('.'):
+                module = getattr(module, part)
+            setattr(module, param_name, param)
+        else:
+            missing_keys.append(key)
+
+    for key in state_dict.keys():
+        if key not in model_state:
+            unexpected_keys.append(key)
+
+    if missing_keys:
+        print(f"   ⚠️  Missing keys: {len(missing_keys)}")
+        if len(missing_keys) <= 5:
+            for key in missing_keys[:5]:
+                print(f"      - {key}")
+
+    if unexpected_keys:
+        print(f"   ⚠️  Unexpected keys: {len(unexpected_keys)}")
+        if len(unexpected_keys) <= 5:
+            for key in unexpected_keys[:5]:
+                print(f"      - {key}")
+
+    # Move model to target device
+    print(f"   Moving model to {device}...")
+    model = model.to(device)
+    model.eval()
+
+    return model
+
+
+def load_gguf_maya1(
+    gguf_path: Path,
+    attention_type: str = "sdpa",
+    device: str = "cuda"
+) -> Maya1GGUFModel:
+    """
+    Load Maya1 model from GGUF file.
+
+    Args:
+        gguf_path: Path to .gguf file
+        attention_type: Attention mechanism (sdpa/eager)
+        device: Device to load on
+
+    Returns:
+        Maya1GGUFModel wrapper
+    """
+    print("=" * 70)
+    print("📦 Loading GGUF Maya1 Model")
+    print("=" * 70)
+    print(f"File: {gguf_path}")
+    print(f"Attention: {attention_type}")
+    print(f"Device: {device}")
+
+    # Load GGUF state dict
+    state_dict, quant_type = load_gguf_state_dict(gguf_path)
+
+    # Load tokenizer
+    print(f"🔤 Loading tokenizer...")
+    tokenizer = load_tokenizer_for_gguf(gguf_path)
+    print(f"   Tokenizer loaded: {len(tokenizer)} tokens")
+
+    # Create model
+    model = create_maya1_model_from_gguf(state_dict, device)
+
+    # Create wrapper
+    maya1_model = Maya1GGUFModel(
+        model=model,
+        tokenizer=tokenizer,
+        model_name=gguf_path.stem,
+        quantization_type=quant_type,
+        device=device
+    )
+
+    print("=" * 70)
+    print(f"✅ GGUF model loaded successfully!")
+    print(f"   Quantization: {quant_type}")
+    print(f"   Device: {device}")
+    print("=" * 70)
+
+    return maya1_model
