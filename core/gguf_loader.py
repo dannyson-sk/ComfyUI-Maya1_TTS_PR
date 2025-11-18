@@ -222,6 +222,7 @@ def remap_gguf_keys(state_dict: dict, config=None) -> dict:
         "attn_k.weight": "self_attn.k_proj.weight",
         "attn_v.weight": "self_attn.v_proj.weight",
         "attn_output.weight": "self_attn.o_proj.weight",
+        "attn_lm_head.weight": "self_attn.o_proj.weight",  # Maya1 specific
         "ffn_norm.weight": "post_attention_layernorm.weight",
         "ffn_up.weight": "mlp.up_proj.weight",
         "ffn_down.weight": "mlp.down_proj.weight",
@@ -230,6 +231,10 @@ def remap_gguf_keys(state_dict: dict, config=None) -> dict:
 
     remapped = {}
     for key, tensor in state_dict.items():
+        # Skip RoPE frequencies (computed dynamically in transformers)
+        if "rope_freqs" in key:
+            continue
+
         new_key = key
         # Apply all mappings
         for old_pattern, new_pattern in key_map.items():
