@@ -235,6 +235,18 @@ def remap_gguf_keys(state_dict: dict, config=None) -> dict:
         for old_pattern, new_pattern in key_map.items():
             new_key = new_key.replace(old_pattern, new_pattern)
 
+        # Mark linear layer weights for transposition
+        # GGUF stores Linear weights as [in_features, out_features]
+        # PyTorch expects [out_features, in_features]
+        # We'll mark them and handle transpose in the forward pass to keep quantization
+        if ".weight" in new_key and hasattr(tensor, 'tensor_shape') and len(tensor.tensor_shape) == 2:
+            # Check if this is a Linear layer weight
+            if any(linear_key in new_key for linear_key in ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]):
+                # Mark that this weight needs transposition
+                tensor.needs_transpose = True
+                # Swap the shape dimensions for correct shape reporting
+                tensor.tensor_shape = torch.Size([tensor.tensor_shape[1], tensor.tensor_shape[0]])
+
         # Unpermute Q and K weights (llama.cpp permutes these)
         # NOTE: Disabled for now - may not be needed for Maya1 or might cause issues
         # if config and ("q_proj.weight" in new_key or "k_proj.weight" in new_key):

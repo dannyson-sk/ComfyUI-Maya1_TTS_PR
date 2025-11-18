@@ -29,6 +29,7 @@ class GGMLTensor(torch.Tensor):
         new = super().to(*args, **kwargs)
         new.tensor_type = getattr(self, "tensor_type", None)
         new.tensor_shape = getattr(self, "tensor_shape", new.data.shape)
+        new.needs_transpose = getattr(self, "needs_transpose", False)
         return new
 
     def clone(self, *args, **kwargs):
@@ -73,6 +74,11 @@ class GGMLLinear(nn.Linear):
             weight = weight.to(input.device)
         else:
             weight = self.weight
+
+        # Handle GGUF transpose requirement
+        # GGUF stores weights as [in, out] but PyTorch expects [out, in]
+        if hasattr(self.weight, 'needs_transpose') and self.weight.needs_transpose:
+            weight = weight.t()
 
         # Handle bias
         bias = None
