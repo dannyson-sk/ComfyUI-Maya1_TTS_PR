@@ -88,7 +88,8 @@ class GGMLLinear(nn.Linear):
             weight = dequantize_tensor(self.weight, dtype=input.dtype)
             weight = weight.to(input.device)
         else:
-            weight = self.weight
+            # Ensure non-quantized weights match input dtype and device
+            weight = self.weight.to(device=input.device, dtype=input.dtype)
 
         # Handle GGUF transpose requirement
         # GGUF stores weights as [in, out] but PyTorch expects [out, in]
@@ -102,7 +103,8 @@ class GGMLLinear(nn.Linear):
                 bias = dequantize_tensor(self.bias, dtype=input.dtype)
                 bias = bias.to(input.device)
             else:
-                bias = self.bias
+                # Ensure non-quantized bias matches input dtype and device
+                bias = self.bias.to(device=input.device, dtype=input.dtype)
 
         return torch.nn.functional.linear(input, weight, bias)
 
@@ -166,7 +168,9 @@ class GGMLEmbedding(nn.Embedding):
             weight = dequantize_tensor(self.weight, dtype=torch.float32)
             weight = weight.to(input.device)
         else:
-            weight = self.weight
+            # Embeddings stay in their loaded dtype (typically float16 for dequantized)
+            # but ensure they're on the right device
+            weight = self.weight.to(device=input.device)
 
         return torch.nn.functional.embedding(
             input, weight, self.padding_idx, self.max_norm,
@@ -220,7 +224,7 @@ class GGMLLayerNorm(nn.LayerNorm):
         else:
             weight = self.weight
             if weight is not None:
-                weight = weight.to(input.device)
+                weight = weight.to(device=input.device, dtype=input.dtype)
 
         bias = None
         if self.bias is not None:
@@ -228,7 +232,7 @@ class GGMLLayerNorm(nn.LayerNorm):
                 bias = dequantize_tensor(self.bias, dtype=input.dtype)
                 bias = bias.to(input.device)
             else:
-                bias = self.bias.to(input.device)
+                bias = self.bias.to(device=input.device, dtype=input.dtype)
 
         return torch.nn.functional.layer_norm(
             input, self.normalized_shape, weight, bias, self.eps
@@ -267,7 +271,8 @@ class GGMLRMSNorm(nn.Module):
             weight = dequantize_tensor(self.weight, dtype=input_dtype)
             weight = weight.to(hidden_states.device)
         else:
-            weight = self.weight
+            # Ensure non-quantized weight matches input dtype and device
+            weight = self.weight.to(device=hidden_states.device, dtype=input_dtype)
 
         return weight * hidden_states.to(input_dtype)
 
