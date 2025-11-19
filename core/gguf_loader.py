@@ -276,11 +276,12 @@ def remap_gguf_keys(state_dict: dict, config=None) -> dict:
         if is_quantized(embed_tensor) and embed_tensor.shape[0] >= (64 * 1024):
             print(f"   Dequantizing large embedding ({embed_tensor.shape[0]} tokens) for lm_head...")
             embed_tensor = dequantize_tensor(embed_tensor, dtype=torch.float16, dequant_dtype=torch.float16)
-            print(f"   Dequantized embedding dtype: {embed_tensor.dtype}")
+            print(f"   Dequantized embedding dtype: {embed_tensor.dtype}, shape: {embed_tensor.shape}")
             # Update the embedding in the state dict too
             remapped["model.embed_tokens.weight"] = embed_tensor
 
-        # Copy to lm_head
+        # CRITICAL: DON'T transpose! Embedding and lm_head both use [vocab_size, hidden_dim]
+        # The issue is elsewhere - just copy as-is
         remapped["lm_head.weight"] = embed_tensor
 
     print(f"   Remapped {len(remapped)} keys from GGUF to transformers format")
