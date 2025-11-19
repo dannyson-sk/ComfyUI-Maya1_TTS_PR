@@ -304,12 +304,7 @@ def replace_linear_with_ggml(module, parent_name=""):
         full_name = f"{parent_name}.{name}" if parent_name else name
 
         if isinstance(child, nn.Linear):
-            # Skip lm_head - it uses tied weights and doesn't need GGML handling
-            if name == "lm_head" or full_name == "lm_head":
-                print(f"   Skipping lm_head replacement (uses tied weights)")
-                continue
-
-            # Replace with GGML version
+            # Replace with GGML version (lm_head will be restored later in loader)
             ggml_linear = GGMLLinear(
                 child.in_features,
                 child.out_features,

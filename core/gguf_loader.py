@@ -252,13 +252,13 @@ def remap_gguf_keys(state_dict: dict, config=None) -> dict:
                 # Swap the shape dimensions for correct shape reporting
                 tensor.tensor_shape = torch.Size([tensor.tensor_shape[1], tensor.tensor_shape[0]])
 
-        # Unpermute Q and K weights (llama.cpp permutes these)
-        # NOTE: Disabled for now - may not be needed for Maya1 or might cause issues
-        # if config and ("q_proj.weight" in new_key or "k_proj.weight" in new_key):
-        #     n_head = config.num_attention_heads
-        #     n_head_kv = getattr(config, "num_key_value_heads", n_head)
-        #     heads = n_head if "q_proj" in new_key else n_head_kv
-        #     tensor = unpermute_qk_weights(tensor, heads)
+        # Unpermute Q and K weights (llama.cpp permutes these for RoPE optimization)
+        # Transformers expects them unpermuted - if we don't fix this, attention is broken
+        if config and ("q_proj.weight" in new_key or "k_proj.weight" in new_key):
+            n_head = config.num_attention_heads
+            n_head_kv = getattr(config, "num_key_value_heads", n_head)
+            heads = n_head if "q_proj" in new_key else n_head_kv
+            tensor = unpermute_qk_weights(tensor, heads)
 
         remapped[new_key] = tensor
 
@@ -328,6 +328,16 @@ def create_maya1_model_from_gguf(state_dict: dict, device: str = "cuda"):
     # Replace Linear/LayerNorm/RMSNorm layers with GGML versions that handle quantization
     print(f"   Replacing layers with GGUF-compatible operations...")
     model = replace_linear_with_ggml(model)
+
+    # Restore lm_head to standard nn.Linear (for tied weights compatibility)
+    # lm_head shares weights with embed_tokens, so we want standard PyTorch behavior
+    if config.tie_word_embeddings:
+        print(f"   Restoring lm_head to standard nn.Linear (for tied weights)...")
+        model.lm_head = nn.Linear(
+            config.hidden_size,
+            config.vocab_size,
+            bias=False
+        )
 
     # Load GGUF weights using PyTorch's built-in load_state_dict
     print(f"   Loading GGUF weights to {device}...")
