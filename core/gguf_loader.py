@@ -359,9 +359,9 @@ def create_maya1_model_from_gguf(state_dict: dict, device: str = "cuda"):
         for key in unexpected_keys[:10]:
             print(f"      - {key}")
 
-    # Move entire model to target device (for any remaining components)
+    # Weights are already on target device from state_dict loading
+    # Don't call model.to(device) here as it would change dtypes!
     print(f"   Finalizing model on {device}...")
-    model = model.to(device)
     model.eval()
 
     return model
