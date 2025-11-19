@@ -275,7 +275,8 @@ def remap_gguf_keys(state_dict: dict, config=None) -> dict:
         # This follows ComfyUI-GGUF's approach for large vocabularies
         if is_quantized(embed_tensor) and embed_tensor.shape[0] >= (64 * 1024):
             print(f"   Dequantizing large embedding ({embed_tensor.shape[0]} tokens) for lm_head...")
-            embed_tensor = dequantize_tensor(embed_tensor, dtype=torch.float16)
+            embed_tensor = dequantize_tensor(embed_tensor, dtype=torch.float16, dequant_dtype=torch.float16)
+            print(f"   Dequantized embedding dtype: {embed_tensor.dtype}")
             # Update the embedding in the state dict too
             remapped["model.embed_tokens.weight"] = embed_tensor
 
@@ -336,10 +337,11 @@ def create_maya1_model_from_gguf(state_dict: dict, device: str = "cuda"):
     # Load GGUF weights using PyTorch's built-in load_state_dict
     print(f"   Loading GGUF weights to {device}...")
 
-    # Move tensors to target device
+    # Move tensors to target device (explicitly preserve dtype)
     state_dict_on_device = {}
     for key, tensor in state_dict.items():
-        state_dict_on_device[key] = tensor.to(device)
+        # Explicitly preserve dtype when moving to device
+        state_dict_on_device[key] = tensor.to(device=device, dtype=tensor.dtype)
 
     # Use PyTorch's load_state_dict with our custom _load_from_state_dict overrides
     incompatible_keys = model.load_state_dict(state_dict_on_device, strict=False)
