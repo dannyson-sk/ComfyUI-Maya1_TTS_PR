@@ -334,6 +334,14 @@ def create_maya1_model_from_gguf(state_dict: dict, device: str = "cuda"):
     missing_keys = incompatible_keys.missing_keys
     unexpected_keys = incompatible_keys.unexpected_keys
 
+    # Tie weights for lm_head (shares weights with embed_tokens)
+    # This must be done AFTER loading the state dict
+    if "lm_head.weight" in missing_keys:
+        print(f"   Tying lm_head.weight to model.embed_tokens.weight...")
+        model.tie_weights()
+        # Remove lm_head.weight from missing keys since it's now tied
+        missing_keys = [k for k in missing_keys if k != "lm_head.weight"]
+
     if missing_keys:
         print(f"   ⚠️  Missing keys: {len(missing_keys)}")
         for key in missing_keys[:10]:
