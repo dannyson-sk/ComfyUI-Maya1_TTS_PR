@@ -264,10 +264,23 @@ def remap_gguf_keys(state_dict: dict, config=None) -> dict:
 
     # Note: Maya1 GGUF files don't have separate output.weight
     # The model uses tied embeddings (lm_head shares weights with embed_tokens)
-    # We don't add lm_head.weight to state_dict - transformers handles this automatically
-    # when config.tie_word_embeddings=True
-    if "lm_head.weight" not in remapped:
-        print(f"   Using tied embeddings (no separate lm_head.weight in GGUF)")
+    # We manually copy embed_tokens to lm_head with proper handling for GGUF
+    if "lm_head.weight" not in remapped and "model.embed_tokens.weight" in remapped:
+        print(f"   Using tied embeddings: copying embed_tokens to lm_head...")
+        from .gguf_dequant import is_quantized, dequantize_tensor
+
+        embed_tensor = remapped["model.embed_tokens.weight"]
+
+        # Dequantize large embeddings to prevent issues (Maya1 vocab = 156960 > 64k)
+        # This follows ComfyUI-GGUF's approach for large vocabularies
+        if is_quantized(embed_tensor) and embed_tensor.shape[0] >= (64 * 1024):
+            print(f"   Dequantizing large embedding ({embed_tensor.shape[0]} tokens) for lm_head...")
+            embed_tensor = dequantize_tensor(embed_tensor, dtype=torch.float16)
+            # Update the embedding in the state dict too
+            remapped["model.embed_tokens.weight"] = embed_tensor
+
+        # Copy to lm_head
+        remapped["lm_head.weight"] = embed_tensor
 
     print(f"   Remapped {len(remapped)} keys from GGUF to transformers format")
     return remapped
@@ -296,8 +309,8 @@ def create_maya1_model_from_gguf(state_dict: dict, device: str = "cuda"):
             "maya-research/maya1",
             trust_remote_code=True
         )
-        # Force tied embeddings since GGUF doesn't have separate lm_head
-        config.tie_word_embeddings = True
+        # Don't use automatic tied embeddings - we handle it manually in state dict
+        config.tie_word_embeddings = False
     except Exception as e:
         print(f"   ⚠️  Could not load config from HuggingFace: {e}")
         raise RuntimeError(
@@ -333,14 +346,6 @@ def create_maya1_model_from_gguf(state_dict: dict, device: str = "cuda"):
 
     missing_keys = incompatible_keys.missing_keys
     unexpected_keys = incompatible_keys.unexpected_keys
-
-    # Tie weights for lm_head (shares weights with embed_tokens)
-    # This must be done AFTER loading the state dict
-    if "lm_head.weight" in missing_keys:
-        print(f"   Tying lm_head.weight to model.embed_tokens.weight...")
-        model.tie_weights()
-        # Remove lm_head.weight from missing keys since it's now tied
-        missing_keys = [k for k in missing_keys if k != "lm_head.weight"]
 
     if missing_keys:
         print(f"   ⚠️  Missing keys: {len(missing_keys)}")
