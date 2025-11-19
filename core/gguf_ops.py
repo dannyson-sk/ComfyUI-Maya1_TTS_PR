@@ -289,18 +289,26 @@ class GGMLOps:
     RMSNorm = GGMLRMSNorm
 
 
-def replace_linear_with_ggml(module):
+def replace_linear_with_ggml(module, parent_name=""):
     """
     Recursively replace nn.Linear, nn.Embedding, nn.LayerNorm, and RMSNorm layers with GGML versions.
 
     Args:
         module: PyTorch module to modify
+        parent_name: Name path of parent module (for tracking)
 
     Returns:
         Modified module with GGML operations
     """
     for name, child in module.named_children():
+        full_name = f"{parent_name}.{name}" if parent_name else name
+
         if isinstance(child, nn.Linear):
+            # Skip lm_head - it uses tied weights and doesn't need GGML handling
+            if name == "lm_head" or full_name == "lm_head":
+                print(f"   Skipping lm_head replacement (uses tied weights)")
+                continue
+
             # Replace with GGML version
             ggml_linear = GGMLLinear(
                 child.in_features,
@@ -353,6 +361,6 @@ def replace_linear_with_ggml(module):
             setattr(module, name, ggml_rmsnorm)
         else:
             # Recursively process children
-            replace_linear_with_ggml(child)
+            replace_linear_with_ggml(child, full_name)
 
     return module
