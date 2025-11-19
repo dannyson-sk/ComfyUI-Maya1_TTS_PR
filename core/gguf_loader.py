@@ -5,6 +5,7 @@ Loads quantized GGUF models and creates Maya1-compatible model wrappers.
 
 import gguf
 import torch
+import torch.nn as nn
 import warnings
 from pathlib import Path
 from typing import Optional
@@ -124,7 +125,6 @@ def load_tokenizer_for_gguf(gguf_path: Path):
         return tokenizer
 
     # Try 2: Look for maya1 model directory with tokenizer
-    # Navigate up to find models/maya1-TTS/maya1/tokenizer
     try:
         from .utils import get_maya1_models_dir
         models_dir = get_maya1_models_dir()
@@ -167,10 +167,11 @@ def load_tokenizer_for_gguf(gguf_path: Path):
 def unpermute_qk_weights(tensor, n_head):
     """
     Reverse the Q/K weight permutation done by llama.cpp during GGUF conversion.
-    Llama.cpp permutes the weights for its own layout, we need to reverse it.
+    Llama.cpp permutes the weights for its own layout (separating even/odd elements),
+    we need to reverse it to standard interleaved format for Transformers RoPE.
 
     Args:
-        tensor: Weight tensor to unpermute
+        tensor: Weight tensor to unpermute (shape: [out_features, in_features])
         n_head: Number of attention heads
 
     Returns:
@@ -181,22 +182,31 @@ def unpermute_qk_weights(tensor, n_head):
     # Dequantize if needed for permutation
     was_quantized = is_quantized(tensor)
     if was_quantized:
-        original_tensor = tensor
+        # If quantized, we must dequantize to float32 to manipulate dimensions correctly.
         tensor = dequantize_tensor(tensor, dtype=torch.float32)
 
     # Unpermute: reverse of llama.cpp's permute operation
-    # Original shape: [dim, dim] -> reshape -> swapaxes -> reshape
-    shape = tensor.shape
-    tensor_reshaped = tensor.reshape(n_head, shape[0] // n_head // 2, 2, *shape[1:])
-    tensor_swapped = tensor_reshaped.swapaxes(1, 2)
-    tensor_unpermuted = tensor_swapped.reshape(shape)
+    # GGUF layout: [n_head, 2, head_dim/2, hidden] -> flattened to [out, in]
+    # This separates the "even" and "odd" components of the RoPE pairs.
+    # We want standard HF layout: [n_head, head_dim/2, 2, hidden] -> flattened to [out, in]
+    # which keeps pairs together: (0,1), (2,3), etc.
 
-    # Return original quantized tensor if it was quantized
-    # (We don't want to keep dequantized version in memory)
-    if was_quantized:
-        return original_tensor
-    else:
-        return tensor_unpermuted
+    shape = tensor.shape # [n_head * head_dim, hidden]
+    n_hidden = shape[0]
+    head_dim = n_hidden // n_head
+
+    # 1. View as [n_head, 2, head_dim/2, input_dim]
+    # This matches the GGUF memory layout where evens and odds are split blocks
+    tensor_view = tensor.view(n_head, 2, head_dim // 2, shape[1])
+
+    # 2. Transpose the 2 and head_dim/2 dimensions
+    # This interleaves them back to [n_head, head_dim/2, 2, input_dim]
+    tensor_trans = tensor_view.transpose(1, 2).contiguous()
+
+    # 3. Reshape back to original 2D shape
+    tensor_unpermuted = tensor_trans.reshape(shape)
+
+    return tensor_unpermuted
 
 
 def remap_gguf_keys(state_dict: dict, config=None) -> dict:
@@ -243,7 +253,6 @@ def remap_gguf_keys(state_dict: dict, config=None) -> dict:
         # Mark linear layer weights for transposition
         # GGUF stores Linear weights as [in_features, out_features]
         # PyTorch expects [out_features, in_features]
-        # We'll mark them and handle transpose in the forward pass to keep quantization
         if ".weight" in new_key and hasattr(tensor, 'tensor_shape') and len(tensor.tensor_shape) == 2:
             # Check if this is a Linear layer weight
             if any(linear_key in new_key for linear_key in ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]):
@@ -252,9 +261,10 @@ def remap_gguf_keys(state_dict: dict, config=None) -> dict:
                 # Swap the shape dimensions for correct shape reporting
                 tensor.tensor_shape = torch.Size([tensor.tensor_shape[1], tensor.tensor_shape[0]])
 
-        # Unpermute Q and K weights (llama.cpp permutes these for RoPE optimization)
-        # Transformers expects them unpermuted - if we don't fix this, attention is broken
+        # Unpermute Q and K weights (llama.cpp permutes these)
+        # This is required for Llama/Maya1 models to work correctly with Transformers
         if config and ("q_proj.weight" in new_key or "k_proj.weight" in new_key):
+            # print(f"   Unpermuting weights for: {new_key}")
             n_head = config.num_attention_heads
             n_head_kv = getattr(config, "num_key_value_heads", n_head)
             heads = n_head if "q_proj" in new_key else n_head_kv
@@ -298,7 +308,6 @@ def create_maya1_model_from_gguf(state_dict: dict, device: str = "cuda"):
     print(f"🔧 Creating Maya1 model architecture...")
 
     # Create model config
-    # We need to infer the config from the state dict or use a default
     try:
         # Try to create config from known Maya1 architecture
         config = AutoConfig.from_pretrained(
@@ -329,8 +338,9 @@ def create_maya1_model_from_gguf(state_dict: dict, device: str = "cuda"):
     print(f"   Replacing layers with GGUF-compatible operations...")
     model = replace_linear_with_ggml(model)
 
-    # Restore lm_head to standard nn.Linear (for tied weights compatibility)
-    # lm_head shares weights with embed_tokens, so we want standard PyTorch behavior
+    # RESTORE LM_HEAD:
+    # Since weights are tied, lm_head should just be a standard Linear layer
+    # that points to the embeddings. GGML wrapper is not needed/compatible here.
     if config.tie_word_embeddings:
         print(f"   Restoring lm_head to standard nn.Linear (for tied weights)...")
         model.lm_head = nn.Linear(
