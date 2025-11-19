@@ -262,6 +262,12 @@ def remap_gguf_keys(state_dict: dict, config=None) -> dict:
 
         remapped[new_key] = tensor
 
+    # Handle tied embeddings: Maya1 GGUF files don't have separate output.weight
+    # The lm_head shares weights with the embedding layer (token_embd)
+    if "lm_head.weight" not in remapped and "model.embed_tokens.weight" in remapped:
+        print(f"   Using tied embeddings: lm_head.weight = model.embed_tokens.weight")
+        remapped["lm_head.weight"] = remapped["model.embed_tokens.weight"]
+
     print(f"   Remapped {len(remapped)} keys from GGUF to transformers format")
     return remapped
 
