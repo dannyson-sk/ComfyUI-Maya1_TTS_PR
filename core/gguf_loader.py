@@ -263,9 +263,20 @@ def remap_gguf_keys(state_dict: dict, config=None) -> dict:
         remapped[new_key] = tensor
 
     # Note: Maya1 GGUF files don't have separate output.weight
-    # DO NOT manually copy embedding to lm_head - let transformers handle tied weights
+    # Transformers will handle tied embeddings via config.tie_word_embeddings=True
     if "lm_head.weight" not in remapped:
         print(f"   No lm_head.weight in GGUF (using tied embeddings)")
+
+    # Dequantize large embeddings (Maya1 vocab = 156960 > 64k threshold)
+    # This prevents runtime issues with quantized embeddings used in lm_head
+    if "model.embed_tokens.weight" in remapped:
+        from .gguf_dequant import is_quantized, dequantize_tensor
+        embed_tensor = remapped["model.embed_tokens.weight"]
+        if is_quantized(embed_tensor) and embed_tensor.shape[0] >= (64 * 1024):
+            print(f"   Dequantizing large embedding ({embed_tensor.shape[0]} tokens)...")
+            embed_tensor = dequantize_tensor(embed_tensor, dtype=torch.float16, dequant_dtype=torch.float16)
+            remapped["model.embed_tokens.weight"] = embed_tensor
+            print(f"   Dequantized to dtype: {embed_tensor.dtype}, shape: {embed_tensor.shape}")
 
     print(f"   Remapped {len(remapped)} keys from GGUF to transformers format")
     return remapped
